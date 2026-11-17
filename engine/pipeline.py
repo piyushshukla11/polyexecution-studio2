@@ -10,6 +10,8 @@ from engine.models import (
     ExecutionRequest,
     ExecutionResult,
     LanguageId,
+    MAX_RUNNER_OUTPUT_BYTES,
+    MAX_SOURCE_BYTES,
     Milestone,
     MilestoneEvent,
     ResourceLimits,
@@ -45,6 +47,31 @@ class ExecutionPipeline:
         self.runner = runner
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
+        # Pre-check 1: Bounded source-code size before writing to temporary storage
+        source_bytes = request.source_code.encode("utf-8")
+        if len(source_bytes) > MAX_SOURCE_BYTES:
+            now = current_time_ms()
+            return ExecutionResult(
+                request_id=request.request_id,
+                language_id=request.language_id,
+                final_status=Milestone.SANDBOX_ERROR,
+                milestones=[
+                    MilestoneEvent(
+                        Milestone.SANDBOX_ERROR,
+                        now,
+                        f"Source code size ({len(source_bytes)} bytes) exceeds limit ({MAX_SOURCE_BYTES} bytes)",
+                    )
+                ],
+                exit_code=1,
+                signal=0,
+                wall_ms=0,
+                cpu_ms=0,
+                peak_memory_kb=0,
+                stdout="",
+                stderr=f"Source code size ({len(source_bytes)} bytes) exceeds maximum allowed limit ({MAX_SOURCE_BYTES} bytes)",
+            )
+
+        # Pre-check 2: Adapter existence
         adapter = self.registry.get(request.language_id)
         if adapter is None:
             now = current_time_ms()
@@ -60,6 +87,30 @@ class ExecutionPipeline:
                 peak_memory_kb=0,
                 stdout="",
                 stderr=f"Runtime adapter for '{request.language_id.value}' not found in registry",
+            )
+
+        # Pre-check 3: Validate requested custom limits against runner capabilities
+        exec_limits = request.custom_limits or adapter.execution_spec.default_resource_limits
+        if exec_limits.max_output_bytes > MAX_RUNNER_OUTPUT_BYTES:
+            now = current_time_ms()
+            return ExecutionResult(
+                request_id=request.request_id,
+                language_id=request.language_id,
+                final_status=Milestone.SANDBOX_ERROR,
+                milestones=[
+                    MilestoneEvent(
+                        Milestone.SANDBOX_ERROR,
+                        now,
+                        f"Requested max_output_bytes ({exec_limits.max_output_bytes}) exceeds runner cap ({MAX_RUNNER_OUTPUT_BYTES})",
+                    )
+                ],
+                exit_code=1,
+                signal=0,
+                wall_ms=0,
+                cpu_ms=0,
+                peak_memory_kb=0,
+                stdout="",
+                stderr=f"Requested max_output_bytes ({exec_limits.max_output_bytes}) exceeds runner cap ({MAX_RUNNER_OUTPUT_BYTES} bytes)",
             )
 
         milestones: List[MilestoneEvent] = []
@@ -102,16 +153,16 @@ class ExecutionPipeline:
                     stdin_content="",
                 )
 
-                # Check if compilation failed
+                # Check if compilation failed (nonzero exit, non-OK status, or missing output artifact)
                 compile_failed = False
                 if compile_res.status != "OK" or compile_res.exit_code != 0:
                     compile_failed = True
-
-                # Secondary defense: check if artifact was produced
-                if not compile_failed and not os.path.exists(artifact_path):
-                    # In mock runs, artifact may not be physically written unless runner is mock or native
-                    # If native runner ran and artifact missing, compile failed
-                    pass
+                    compile_output = (compile_res.stderr or compile_res.stdout).strip()
+                elif not os.path.exists(artifact_path):
+                    compile_failed = True
+                    compile_output = (compile_res.stderr or compile_res.stdout).strip()
+                    if not compile_output:
+                        compile_output = f"Compiler exited successfully but produced no artifact at {artifact_rel}"
 
                 if compile_failed:
                     # Stale artifact defense: guarantee any partial artifact is purged
@@ -121,7 +172,6 @@ class ExecutionPipeline:
                         except OSError:
                             pass
 
-                    compile_output = (compile_res.stderr or compile_res.stdout).strip()
                     milestones.append(
                         MilestoneEvent(Milestone.COMPILE_ERROR, current_time_ms(), "Compilation failed")
                     )
@@ -144,7 +194,6 @@ class ExecutionPipeline:
             # Interpreted languages emit RUNNING directly after ACCEPTED without synthetic COMPILING
             milestones.append(MilestoneEvent(Milestone.RUNNING, current_time_ms(), "Target execution started"))
 
-            exec_limits = request.custom_limits or adapter.execution_spec.default_resource_limits
             exec_res = self.runner.run(
                 workspace=workspace,
                 target_bin=adapter.execution_spec.runner_bin,
@@ -153,7 +202,22 @@ class ExecutionPipeline:
                 stdin_content=request.stdin,
             )
 
+            stdout = exec_res.stdout
+            stderr = exec_res.stderr
             final_status = map_runner_status(exec_res.status)
+
+            # Software output bounding if custom limit is smaller than runner's 64 KiB cap
+            total_bytes = len(stdout.encode("utf-8")) + len(stderr.encode("utf-8"))
+            if final_status in (Milestone.COMPLETED, Milestone.RUNTIME_ERROR) and total_bytes > exec_limits.max_output_bytes:
+                final_status = Milestone.OUTPUT_LIMIT
+                raw_stdout = stdout.encode("utf-8")
+                if len(raw_stdout) > exec_limits.max_output_bytes:
+                    stdout = raw_stdout[:exec_limits.max_output_bytes].decode("utf-8", errors="replace")
+                    stderr = ""
+                else:
+                    remaining = exec_limits.max_output_bytes - len(raw_stdout)
+                    stderr = stderr.encode("utf-8")[:remaining].decode("utf-8", errors="replace")
+
             milestones.append(MilestoneEvent(final_status, current_time_ms(), f"Execution completed with {final_status.value}"))
 
             return ExecutionResult(
@@ -166,8 +230,8 @@ class ExecutionPipeline:
                 wall_ms=exec_res.wall_ms,
                 cpu_ms=exec_res.cpu_ms,
                 peak_memory_kb=exec_res.peak_memory_kb,
-                stdout=exec_res.stdout,
-                stderr=exec_res.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 compile_output=compile_output,
             )
 

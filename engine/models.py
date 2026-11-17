@@ -64,6 +64,10 @@ class SeccompPolicyProfile(str, Enum):
     V8_NODE = "V8_NODE"
 
 
+MAX_SOURCE_BYTES: int = 65536
+MAX_RUNNER_OUTPUT_BYTES: int = 65536
+
+
 @dataclass(frozen=True)
 class ResourceLimits:
     cpu_ms: int = 1000

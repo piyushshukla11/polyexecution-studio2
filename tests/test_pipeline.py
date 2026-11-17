@@ -7,7 +7,9 @@ import unittest
 from engine.models import (
     ExecutionRequest,
     LanguageId,
+    MAX_SOURCE_BYTES,
     Milestone,
+    ResourceLimits,
     RunnerResult,
 )
 from engine.pipeline import ExecutionPipeline
@@ -15,10 +17,25 @@ from engine.registry import RuntimeRegistry
 from engine.runner import MockSandboxRunner
 
 
+class ArtifactCreatingMockRunner(MockSandboxRunner):
+    """Simulates realistic compiler behavior by producing output artifact on compile success."""
+
+    def run(self, workspace, target_bin, target_argv, limits, stdin_content=""):
+        res = super().run(workspace, target_bin, target_argv, limits, stdin_content)
+        # If compilation succeeded, create the expected output binary
+        if res.status == "OK" and res.exit_code == 0:
+            if target_bin.endswith("gcc") or target_bin.endswith("clang++") or target_bin.endswith("g++"):
+                out_path = os.path.join(workspace, "a.out")
+                with open(out_path, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(out_path, 0o755)
+        return res
+
+
 class TestExecutionPipeline(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = RuntimeRegistry()
-        self.runner = MockSandboxRunner()
+        self.runner = ArtifactCreatingMockRunner()
         self.pipeline = ExecutionPipeline(self.registry, self.runner)
 
     def test_c_success_milestones(self) -> None:
@@ -54,6 +71,37 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertTrue(self.runner.invocations[0]["target_bin"].endswith("gcc"))
         # Stage 2: artifact bin
         self.assertEqual(self.runner.invocations[1]["target_bin"], "/workspace/a.out")
+
+    def test_c_compile_success_without_artifact_fails_closed(self) -> None:
+        # Compiler exits 0 with status OK, but produces no artifact
+        bare_runner = MockSandboxRunner()
+        bare_runner.queue_result(
+            RunnerResult("OK", 0, 0, 80, 50, 16384, "", "")
+        )
+        pipeline = ExecutionPipeline(self.registry, bare_runner)
+
+        request = ExecutionRequest(
+            request_id="req-c-no-art",
+            language_id=LanguageId.C,
+            source_code="int main() { return 0; }\n",
+        )
+        res = pipeline.execute(request)
+
+        # Must fail closed as COMPILE_ERROR
+        self.assertEqual(res.final_status, Milestone.COMPILE_ERROR)
+        self.assertIn("produced no artifact", res.compile_output or "")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+
+        # Execution stage must NEVER have started
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
+        self.assertEqual(len(bare_runner.invocations), 1)
 
     def test_c_compile_error_truthful_and_fail_closed(self) -> None:
         # Compiler fails
@@ -193,6 +241,52 @@ class TestExecutionPipeline(unittest.TestCase):
 
         self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
         self.assertEqual(res.signal, 9)
+
+    def test_oversized_source_rejected_before_workspace(self) -> None:
+        oversized = "a" * (MAX_SOURCE_BYTES + 10)
+        request = ExecutionRequest(
+            request_id="req-oversized",
+            language_id=LanguageId.PYTHON3,
+            source_code=oversized,
+        )
+        initial_workspaces = glob.glob("/tmp/pes2-work-*")
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("exceeds maximum allowed limit", res.stderr)
+        self.assertEqual(len(self.runner.invocations), 0)
+        # Ensure zero host temporary directories were provisioned
+        after_workspaces = glob.glob("/tmp/pes2-work-*")
+        self.assertEqual(len(initial_workspaces), len(after_workspaces))
+
+    def test_unsupported_max_output_bytes_rejected(self) -> None:
+        request = ExecutionRequest(
+            request_id="req-big-output",
+            language_id=LanguageId.PYTHON3,
+            source_code="print('hi')\n",
+            custom_limits=ResourceLimits(max_output_bytes=70000),
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("exceeds runner cap", res.stderr)
+        self.assertEqual(len(self.runner.invocations), 0)
+
+    def test_custom_max_output_bytes_software_truncation(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 10, 5, 4096, "0123456789abcdefghij", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-cap-test",
+            language_id=LanguageId.PYTHON3,
+            source_code="print('0123456789abcdefghij')\n",
+            custom_limits=ResourceLimits(max_output_bytes=10),
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.OUTPUT_LIMIT)
+        self.assertEqual(res.stdout, "0123456789")
+        self.assertEqual(len(res.stdout.encode("utf-8")), 10)
 
     def test_ephemeral_workspace_cleanup(self) -> None:
         initial_workspaces = glob.glob("/tmp/pes2-work-*")
