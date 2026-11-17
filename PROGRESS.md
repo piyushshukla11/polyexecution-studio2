@@ -116,3 +116,31 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/include/runner.h`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/src/seccomp.c`.
 - Linked: LOG-0006.
 - Tutor review: pending
+
+
+## [LOG-0008] 2026-11-17 14:16 IST | PLAN | actor: agent
+- Goal: Extend the append-only regression harness to prove Git invokes the configured pre-commit hook on actual commits in an isolated temporary repository.
+- Steps:
+  1. Copy the checked-in pre-commit hook and its validation scripts into the temporary repository while preserving their relative layout.
+  2. Configure core.hooksPath only in the temporary repository after creating its baseline commit.
+  3. Assert a real append commit succeeds, while real historical modification and deletion commits are rejected without advancing HEAD.
+  4. Run the focused append-only suite and repository hygiene checks; keep all temporary data outside the PES 2 worktree.
+- Files: `PROGRESS.md`, `scripts/test_append_only.sh`.
+- Linked: LOG-0007.
+- Tutor review: pending
+
+
+## [LOG-0009] 2026-11-17 14:18 IST | DONE | actor: agent
+- Goal: Extend the append-only regression harness to prove Git invokes the configured pre-commit hook on actual commits in an isolated temporary repository.
+- Outcome:
+  1. Extended `scripts/test_append_only.sh` to copy the checked-in pre-commit hook and its validation scripts into its temporary Git repository, preserving their relative paths, and configure `core.hooksPath` locally in that repository only.
+  2. Added real `git commit` checks proving that a valid append is accepted and that historical modification and deletion commits are rejected without advancing `HEAD`.
+  3. Preserved the four direct checker scenarios for append, edit, deletion, and middle insertion.
+- Verification:
+  - `bash scripts/test_append_only.sh`: 7/7 passed, including all three real commit-hook cases.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `git diff --cached --check`: passed.
+- Files: `PROGRESS.md`, `scripts/test_append_only.sh`.
+- Linked: LOG-0008.
+- Tutor review: pending

@@ -102,9 +102,69 @@ fi
 git reset -q HEAD
 git checkout -q -- PROGRESS.md
 
+# ----------------------------------------------------------------------
+# Hook-level tests: invoke real git commits in this isolated repository.
+# The hook resolves its repository root relative to its own location, so
+# copy the checked-in hook and validators into this temporary repository.
+# ----------------------------------------------------------------------
+mkdir -p "$TMP_DIR/scripts/hooks"
+cp "$REPO_ROOT/scripts/hooks/pre-commit" "$TMP_DIR/scripts/hooks/pre-commit"
+cp "$REPO_ROOT/scripts/check_progress_append_only.sh" "$TMP_DIR/scripts/check_progress_append_only.sh"
+cp "$REPO_ROOT/scripts/check_repo_hygiene.sh" "$TMP_DIR/scripts/check_repo_hygiene.sh"
+chmod +x "$TMP_DIR/scripts/hooks/pre-commit"
+git config --local core.hooksPath "$TMP_DIR/scripts/hooks"
+
+# Test 5: A real append commit must pass through the configured hook.
+echo "Test 5: Real append commit invokes the configured pre-commit hook..."
+printf 'Line 3: append through real hook\n' >> PROGRESS.md
+git add PROGRESS.md
+set +e
+TEST5_OUT=$(git commit -m "test valid append" 2>&1)
+TEST5_STATUS=$?
+set -e
+if [ "$TEST5_STATUS" -eq 0 ] && git log -1 --format=%s | grep -q "test valid append"; then
+    pass "A valid append commit succeeded through the configured pre-commit hook"
+else
+    fail "Test 5" "Expected valid append commit to succeed; status=$TEST5_STATUS; output=$TEST5_OUT"
+fi
+
+# Test 6: A real historical modification commit must be rejected.
+echo "Test 6: Real historical edit commit is rejected by the configured hook..."
+HOOK_HEAD_BEFORE_EDIT=$(git rev-parse HEAD)
+sed -i 's/Line 1: init/Line 1: modified/' PROGRESS.md
+git add PROGRESS.md
+set +e
+TEST6_OUT=$(git commit -m "test historical edit" 2>&1)
+TEST6_STATUS=$?
+set -e
+HOOK_HEAD_AFTER_EDIT=$(git rev-parse HEAD)
+if [ "$TEST6_STATUS" -ne 0 ] && echo "$TEST6_OUT" | grep -q "BLOCKED" && [ "$HOOK_HEAD_AFTER_EDIT" = "$HOOK_HEAD_BEFORE_EDIT" ]; then
+    pass "A historical edit commit was rejected and HEAD did not advance"
+else
+    fail "Test 6" "Expected hook to reject historical edit without creating a commit; status=$TEST6_STATUS; output=$TEST6_OUT; HEAD before=$HOOK_HEAD_BEFORE_EDIT after=$HOOK_HEAD_AFTER_EDIT"
+fi
+git reset -q HEAD -- PROGRESS.md
+git checkout -q -- PROGRESS.md
+
+# Test 7: A real historical deletion commit must be rejected.
+echo "Test 7: Real historical deletion commit is rejected by the configured hook..."
+HOOK_HEAD_BEFORE_DELETE=$(git rev-parse HEAD)
+sed -i '/Line 2: setup/d' PROGRESS.md
+git add PROGRESS.md
+set +e
+TEST7_OUT=$(git commit -m "test historical deletion" 2>&1)
+TEST7_STATUS=$?
+set -e
+HOOK_HEAD_AFTER_DELETE=$(git rev-parse HEAD)
+if [ "$TEST7_STATUS" -ne 0 ] && echo "$TEST7_OUT" | grep -q "BLOCKED" && [ "$HOOK_HEAD_AFTER_DELETE" = "$HOOK_HEAD_BEFORE_DELETE" ]; then
+    pass "A historical deletion commit was rejected and HEAD did not advance"
+else
+    fail "Test 7" "Expected hook to reject historical deletion without creating a commit; status=$TEST7_STATUS; output=$TEST7_OUT; HEAD before=$HOOK_HEAD_BEFORE_DELETE after=$HOOK_HEAD_AFTER_DELETE"
+fi
+
 echo "========================================================================"
 if [ "$FAILED" -eq 0 ]; then
-    echo "SUCCESS: All append-only verification tests PASSED!"
+    echo "SUCCESS: All 7 append-only verification tests PASSED!"
     exit 0
 else
     echo "FAILURE: $FAILED test(s) failed."
