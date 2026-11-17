@@ -96,6 +96,20 @@ static int cgroup_dir(char *out, size_t cap, const char *root, const char *name)
     return 0;
 }
 
+static int host_has_active_swap(void) {
+    FILE *f = fopen("/proc/swaps", "re");
+    if (!f) return 0;
+    char line[256];
+    int count = 0;
+    while (fgets(line, sizeof(line), f)) {
+        count++;
+    }
+    int saved = errno;
+    (void)fclose(f);
+    errno = saved;
+    return count > 1; /* First line is header */
+}
+
 int cgroup_init(const char *root, const char *name, uint32_t max_pids,
                 uint32_t memory_limit_kb) {
     if (!root || root[0] != '/' || !valid_name(name) || max_pids == 0 ||
@@ -140,6 +154,28 @@ int cgroup_init(const char *root, const char *name, uint32_t max_pids,
     else if (!failed) {
         snprintf(value, sizeof(value), "%llu", (unsigned long long)memory_limit_kb * 1024ULL);
         if (write_value(file, value) != 0) failed = 1;
+    }
+    if (!failed && make_path(file, sizeof(file), root, name, "memory.swap.max") != 0) failed = 1;
+    else if (!failed) {
+        if (access(file, F_OK) == 0) {
+            if (write_value(file, "0") != 0) {
+                failed = 1;
+            } else {
+                FILE *sf = fopen(file, "re");
+                if (!sf) {
+                    failed = 1;
+                } else {
+                    char swap_val[32] = {0};
+                    if (fscanf(sf, "%31s", swap_val) != 1 || strcmp(swap_val, "0") != 0) {
+                        failed = 1;
+                    }
+                    (void)fclose(sf);
+                }
+            }
+        } else if (host_has_active_swap()) {
+            errno = ENOTSUP;
+            failed = 1;
+        }
     }
     if (!failed && make_path(file, sizeof(file), root, name, "memory.oom.group") != 0) failed = 1;
     else if (!failed && write_value(file, "1") != 0) failed = 1;
@@ -221,7 +257,19 @@ int cgroup_peak_memory_kb(const char *root, const char *name, uint64_t *peak_kb)
 int cgroup_oom_kill_count(const char *root, const char *name, uint64_t *count) {
     char path[512];
     if (!count || make_path(path, sizeof(path), root, name, "memory.events") != 0) return -1;
-    return read_key_u64(path, "oom_kill", count);
+    uint64_t oom_kill = 0, oom_group_kill = 0;
+    int r1 = read_key_u64(path, "oom_kill", &oom_kill);
+    int r2 = read_key_u64(path, "oom_group_kill", &oom_group_kill);
+    if (r1 != 0 && r2 != 0) {
+        char local_path[512];
+        if (make_path(local_path, sizeof(local_path), root, name, "memory.events.local") == 0) {
+            r1 = read_key_u64(local_path, "oom_kill", &oom_kill);
+            r2 = read_key_u64(local_path, "oom_group_kill", &oom_group_kill);
+        }
+    }
+    if (r1 != 0 && r2 != 0) return -1;
+    *count = oom_kill + oom_group_kill;
+    return 0;
 }
 
 int cgroup_cpu_usage_ms(const char *root, const char *name, uint64_t *usage_ms) {

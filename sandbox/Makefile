@@ -17,6 +17,7 @@ src/%.o: src/%.c include/runner.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test: $(TARGET)
+	bash tests/test_cgroup_discovery.sh
 	bash tests/test_runner.sh
 
 clean:
