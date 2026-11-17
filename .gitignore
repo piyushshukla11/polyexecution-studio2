@@ -1,0 +1,39 @@
+# PolyExecution Studio 2 .gitignore
+
+# Build outputs & artifacts
+build/
+dist/
+target/
+*.o
+*.a
+*.so
+*.class
+*.jar
+*.exe
+
+# Dependencies
+node_modules/
+.gradle/
+
+# Secrets & Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE & OS files
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Test & execution outputs
+*.log
+/tmp/
+/workspace/
+core
+vgcore.*
+hs_err_pid*
+
+# Local study notes (per PES workflow)
+LEARNING_NOTES/
