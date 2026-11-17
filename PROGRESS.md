@@ -144,3 +144,38 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: `PROGRESS.md`, `scripts/test_append_only.sh`.
 - Linked: LOG-0008.
 - Tutor review: pending
+
+
+## [LOG-0010] 2026-11-17 14:23 IST | PLAN | actor: agent
+- Goal: Implement the authorized Phase 1 native C sandbox runner with bounded process supervision, fail-closed cgroup v2 and namespace setup, default-deny seccomp, and adversarial tests.
+- Reason: The current Phase 1 sources are compilation-only skeletons; the requested push must contain a real, reviewable sandbox implementation rather than TODO stubs.
+- Steps:
+  1. Correct the Tier A seccomp guidance to default-deny and implement an explicit syscall allowlist applied only after child isolation setup.
+  2. Implement bounded cgroup v2 lifecycle, parent-controlled child attach/exec handshake, Linux namespace and minimal-root setup, rlimits, monotonic timeout, nonblocking stdout/stderr draining, wait4 metrics, and deterministic cleanup.
+  3. Add safe acceptance and adversarial fixtures for exit status, timeout, output limits, fork containment, network denial, and filesystem isolation; fail closed when required host cgroup delegation is unavailable.
+  4. Run compile, test, hygiene, append-only, and diff checks; document which runtime cases the current host can and cannot verify.
+- Files: `PROGRESS.md`, `sandbox/include/runner.h`, `sandbox/src/runner.c`, `sandbox/src/cgroup.c`, `sandbox/src/seccomp.c`, `sandbox/Makefile`, `sandbox/tests/*`, `sandbox/.gitignore`.
+- Tier: AGENT-WROTE-TIER-A, explicitly authorized by Piyush on 2026-11-17.
+- Linked: LOG-0009.
+- Tutor review: pending
+
+
+## [LOG-0011] 2026-11-17 14:45 IST | DONE | actor: agent
+- Goal: Implement the authorized Phase 1 native C sandbox runner with bounded process supervision, fail-closed cgroup v2 and namespace setup, default-deny seccomp, and adversarial tests.
+- Outcome:
+  1. Implemented `runner_execute` and the CLI with bounded request validation, a parent-controlled child handshake, user/mount/PID/network/IPC namespaces, private chroot mounts, rlimits, monotonic wall and cgroup CPU timing, nonblocking stdout/stderr draining, exact per-stream output caps, wait4 accounting, cancellation, and cleanup.
+  2. Implemented cgroup v2 `pids.max`, `memory.max`, `memory.oom.group`, and `cpu.max`; attachment occurs before the child is released to execute. Setup fails closed when required controllers or writable cgroup delegation are unavailable.
+  3. Replaced default-allow seccomp guidance with a default-kill filter and explicit syscall allowlist; namespace-creating clone flags and network syscalls remain denied.
+  4. Added fixtures and a runtime suite for exit status, wall timeout, output overflow, memory limit, PID limit/fork pressure, network denial, filesystem visibility, cancellation, and cleanup. Runtime cases are gated on delegated cgroup availability; the current host does not provide it.
+  5. Authored the Tier A implementation as agent work under Piyush's explicit authorization; no agent work is represented as owner-authored learning.
+- Verification:
+  - `make -C sandbox clean all`: passed with `-Wall -Wextra -Werror -O2`.
+  - `make -C sandbox test`: fail-closed test passed; runtime isolation cases were skipped because `/sys/fs/cgroup/cgroup.subtree_control` is not writable in this environment.
+  - `unshare --user --map-root-user --mount --pid --net --ipc --fork /usr/bin/true`: passed; namespace availability probe only, not a sandbox runtime test.
+  - `clang --analyze`: no diagnostics.
+  - `bash scripts/test_append_only.sh`: 7/7 passed, including real temporary-repository commits through the pre-commit hook.
+  - Repository hygiene, append-only, and diff checks passed before commit.
+- Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/include/runner.h`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/src/seccomp.c`, `sandbox/tests/fixtures/*`, `sandbox/tests/test_runner.sh`.
+- Linked: LOG-0010.
+- Status: Phase 1 runtime DoD remains unverified until the full suite runs with a writable delegated cgroup v2 subtree. Do not mark Phase 1 complete based on the build or fail-closed test alone.
+- Tutor review: pending

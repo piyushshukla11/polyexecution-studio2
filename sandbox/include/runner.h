@@ -4,7 +4,12 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-/* Truthful execution result status codes */
+#define RUNNER_OUTPUT_CAP_BYTES 65536U
+#define RUNNER_MAX_TIMEOUT_MS 60000U
+#define RUNNER_MIN_MEMORY_KB 16384U
+#define RUNNER_MAX_MEMORY_KB 1048576U
+#define RUNNER_MAX_PIDS 128U
+
 typedef enum {
     STATUS_OK = 0,
     STATUS_RUNTIME_ERROR = 1,
@@ -12,42 +17,48 @@ typedef enum {
     STATUS_OUTPUT_LIMIT = 3,
     STATUS_MEMORY_LIMIT = 4,
     STATUS_BLOCKED_BY_POLICY = 5,
-    STATUS_SANDBOX_ERROR = 6
+    STATUS_SANDBOX_ERROR = 6,
+    STATUS_CANCELLED = 7
 } runner_status_t;
 
-/* Execution configuration and bounded limits */
 typedef struct {
-    const char *target_bin;       /* Absolute path to target executable */
-    char *const *target_argv;     /* Null-terminated argv vector */
-    const char *workspace_dir;    /* Isolated ephemeral workspace */
-    uint32_t cpu_timeout_ms;      /* CPU time limit ceiling */
-    uint32_t wall_timeout_ms;     /* Wall-clock timeout ceiling */
-    uint32_t memory_limit_kb;     /* RSS/Virtual memory ceiling */
-    uint32_t max_output_bytes;    /* Stdout/stderr byte cap (e.g. 65536) */
-    uint32_t max_pids;            /* Cgroup pids.max ceiling (e.g. 32) */
-    const char *cgroup_name;      /* Name of dedicated cgroup */
+    const char *target_bin;
+    char *const *target_argv;
+    const char *workspace_dir;
+    const char *cgroup_root;
+    uint32_t cpu_timeout_ms;
+    uint32_t wall_timeout_ms;
+    uint32_t memory_limit_kb;    /* cgroup-charged memory, not virtual address space */
+    uint32_t max_output_bytes;
+    uint32_t max_pids;
+    char cgroup_name[64];
 } runner_config_t;
 
-/* Execution result metrics and captured output */
 typedef struct {
-    runner_status_t status;       /* High-level status */
-    int exit_code;                /* Process exit status if exited */
-    int term_signal;              /* Fatal signal if terminated by signal */
-    uint64_t cpu_time_ms;         /* CPU user + system time */
-    uint64_t wall_time_ms;        /* High-resolution wall-clock duration */
-    uint64_t peak_memory_kb;      /* Peak RSS reported by wait4 / cgroup */
-    char *stdout_buf;             /* Bounded stdout stream */
-    uint32_t stdout_len;          /* Number of bytes in stdout */
-    char *stderr_buf;             /* Bounded stderr stream */
-    uint32_t stderr_len;          /* Number of bytes in stderr */
+    runner_status_t status;
+    int exit_code;
+    int term_signal;
+    uint64_t cpu_time_ms;
+    uint64_t wall_time_ms;
+    uint64_t peak_memory_kb;
+    char *stdout_buf;
+    uint32_t stdout_len;
+    char *stderr_buf;
+    uint32_t stderr_len;
 } runner_result_t;
 
-/* Cgroup v2 lifecycle functions */
-int cgroup_init(const char *cgroup_name, uint32_t max_pids, uint32_t memory_limit_kb);
-int cgroup_attach(const char *cgroup_name, pid_t pid);
-int cgroup_cleanup(const char *cgroup_name);
+int runner_execute(const runner_config_t *config, runner_result_t *result);
+void runner_result_destroy(runner_result_t *result);
 
-/* Seccomp-BPF filter functions */
+int cgroup_init(const char *root, const char *name, uint32_t max_pids,
+                uint32_t memory_limit_kb);
+int cgroup_attach(const char *root, const char *name, pid_t pid);
+int cgroup_kill(const char *root, const char *name);
+int cgroup_cleanup(const char *root, const char *name);
+int cgroup_peak_memory_kb(const char *root, const char *name, uint64_t *peak_kb);
+int cgroup_oom_kill_count(const char *root, const char *name, uint64_t *count);
+int cgroup_cpu_usage_ms(const char *root, const char *name, uint64_t *usage_ms);
+
 int seccomp_apply_strict_filter(void);
 
-#endif /* PES2_RUNNER_H */
+#endif
