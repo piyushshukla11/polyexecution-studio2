@@ -214,3 +214,40 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/tests/discover_cgroup.sh`, `sandbox/tests/test_cgroup_discovery.sh`, `sandbox/tests/test_runner.sh`.
 - Linked: LOG-0012.
 - Tutor review: pending
+
+
+## [LOG-0014] 2026-11-17 17:28 IST | PLAN | actor: agent
+- Goal: Make test suite reporting unambiguous when runtime isolation tests are skipped, clearly distinguish discovery unit tests from runtime verification, add a regression test for the no-delegation case, and add strict runtime targets.
+- Reason: When run in environments without cgroup delegation or user namespace capabilities, runtime isolation tests are skipped; however, discovery tests previously outputted an unqualified "SUCCESS: All focused cgroup discovery tests PASSED!", creating ambiguity where CI or a reader might mistake a build or discovery pass for complete Phase 1 runtime verification.
+- Steps:
+  1. In `sandbox/tests/test_cgroup_discovery.sh`: clarify test summary to specify it covers discovery unit tests only; add Test 5 exercising the no-delegation case (validating that discovery fails, `test_runner.sh` skips with explicit warning banners and does not claim full pass, and fails with exit code 1 under `PES2_REQUIRE_RUNTIME=1`).
+  2. In `sandbox/tests/test_runner.sh`: emit prominent, unambiguous summary banners distinguishing fail-closed unit checks from runtime isolation checks; display clear warnings when runtime tests are skipped stating that Phase 1 DoD is not met; support `PES2_REQUIRE_RUNTIME=1` to fail closed for CI when runtime tests cannot execute; emit detailed checklist upon full pass.
+  3. In `sandbox/Makefile`: add `test-runtime` target setting `PES2_REQUIRE_RUNTIME=1` for strict CI/host runtime verification alongside `test`.
+  4. Run clean build, focused discovery tests, sandbox test suite, append-only hook test, hygiene check, and diff check.
+- Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/tests/test_cgroup_discovery.sh`, `sandbox/tests/test_runner.sh`.
+- Linked: LOG-0013.
+- Expected: Ambiguity eliminated; skips are visibly and loudly flagged; regression test validates no-delegation behavior; runtime tests remain fully runnable when valid delegation is present.
+- Tutor review: pending
+
+
+## [LOG-0015] 2026-11-17 17:38 IST | DONE | actor: agent
+- Goal: Make test suite reporting unambiguous when runtime isolation tests are skipped, clearly distinguish discovery unit tests from runtime verification, add a regression test for the no-delegation case, and add strict runtime targets.
+- Outcome:
+  1. Updated `sandbox/tests/test_cgroup_discovery.sh` to remove misleading unqualified "SUCCESS" banner; explicitly labeled summary as unit checks for cgroup discovery and fallback helpers only.
+  2. Added Test 5 to `sandbox/tests/test_cgroup_discovery.sh`: automated regression test proving that when no delegated cgroup subtree exists, `test_runner.sh` explicitly reports `RUNTIME ISOLATION SKIPPED`, emits a prominent warning that Phase 1 DoD is not met, and does not claim full pass.
+  3. Added Test 5b to `sandbox/tests/test_cgroup_discovery.sh`: automated regression test proving that strict mode (`PES2_REQUIRE_RUNTIME=1`) fails closed with non-zero exit when runtime isolation cannot execute.
+  4. Updated `sandbox/tests/test_runner.sh` to print prominent summary banners clearly distinguishing fail-closed unit checks (PASSED) from runtime isolation checks (SKIPPED or PASSED), warning prominently that Phase 1 DoD is unverified when skipped, and printing a complete 10-fixture checklist upon full pass.
+  5. Added `test-runtime` target to `sandbox/Makefile` enabling strict CI and automated verification where missing runtime isolation fails the build.
+- Verification:
+  - `make -C sandbox clean all`: passed cleanly with `-Wall -Wextra -Werror -O2`.
+  - `bash sandbox/tests/test_cgroup_discovery.sh`: 5/5 passed (including regression tests for no-delegation fallback and strict failure).
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED with clear warning notice and reason (namespace restriction inside sandbox subshell).
+  - `make -C sandbox test-runtime`: failed closed with exit code 2 and explicit error as required when runtime isolation cannot run.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `cd /home/zogratis/Projects/Personal\ Projects/polyexecution-studio2 && bash scripts/check_repo_hygiene.sh`: passed.
+  - `cd /home/zogratis/Projects/Personal\ Projects/polyexecution-studio2 && bash scripts/check_progress_append_only.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/tests/test_cgroup_discovery.sh`, `sandbox/tests/test_runner.sh`.
+- Linked: LOG-0014.
+- Status: Phase 1 runtime DoD remains UNVERIFIED in environments lacking delegated cgroups or unprivileged user namespaces. Skips are now loudly and unambiguously reported.
+- Tutor review: pending
