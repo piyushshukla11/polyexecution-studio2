@@ -346,3 +346,53 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0018.
 - Status: Phase 2 vertical slice engine implemented on branch `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Tier A sandbox C code untouched.
 - Tutor review: pending
+
+
+## [LOG-0020] 2026-11-17 21:08 IST | PLAN | actor: agent
+- Goal: Fix Tier B pipeline correctness gaps: missing artifact check upon compiler zero exit, max_output_bytes enforcement/rejection against runner 64 KiB cap, and pre-write source size bounding.
+- Reason: Tutor review identified: (1) if compilation exits 0 but produces no artifact, the pipeline improperly continued to execution; (2) custom max_output_bytes was ignored by the runner interface without software cap or validation; (3) unconstrained source code could consume host temporary storage. Tier A sandbox C code must not be modified.
+- Steps:
+  1. Define MAX_SOURCE_BYTES (65536) and MAX_RUNNER_OUTPUT_BYTES (65536) in engine/models.py.
+  2. In engine/pipeline.py:
+     - Check UTF-8 byte length of request.source_code against MAX_SOURCE_BYTES before provisioning or writing to host workspace; reject oversized inputs with SANDBOX_ERROR.
+     - Validate requested max_output_bytes: if custom limit exceeds MAX_RUNNER_OUTPUT_BYTES, reject early with clear error describing the runner cap.
+     - In Stage 1 compilation, verify the expected artifact file exists on disk even if compiler returned exit 0; if missing, fail closed as COMPILE_ERROR and ensure Stage 2 execution is never started.
+     - In Stage 2 execution, enforce the requested max_output_bytes if less than runner 64 KiB cap by truncating stdout/stderr and marking OUTPUT_LIMIT when output length exceeds limit.
+  3. Update tests/test_pipeline.py:
+     - Update C success mock to simulate artifact generation.
+     - Add regression test for zero-exit compile with missing artifact (asserts COMPILE_ERROR and zero RUNNING emissions).
+     - Add regression test for custom max_output_bytes enforcement (truncation and OUTPUT_LIMIT milestone) and rejection of limits > 65536 bytes.
+     - Add regression test for oversized source code rejection before workspace write.
+  4. Run unit tests, append-only verification, repo hygiene checks, and git diff checks.
+- Files: PROGRESS.md, engine/models.py, engine/pipeline.py, tests/test_pipeline.py.
+- Linked: LOG-0019.
+- Expected: All unit tests pass; missing artifact results in COMPILE_ERROR; max_output_bytes strictly honored or rejected; oversized source rejected before disk write; zero Tier A files modified; Phase 1 tutor review remains pending.
+- Tutor review: pending
+
+
+## [LOG-0021] 2026-11-17 21:29 IST | DONE | actor: agent
+- Goal: Fix Tier B pipeline correctness gaps: missing artifact check upon compiler zero exit, max_output_bytes enforcement/rejection against runner 64 KiB cap, and pre-write source size bounding.
+- Outcome:
+  1. Defined `MAX_SOURCE_BYTES = 65536` (64 KiB) and `MAX_RUNNER_OUTPUT_BYTES = 65536` (64 KiB) in `engine/models.py`.
+  2. In `engine/pipeline.py`:
+     - Added pre-workspace validation: UTF-8 source byte length is checked against `MAX_SOURCE_BYTES` before creating any temporary workspace on the host; oversized inputs are rejected immediately with `SANDBOX_ERROR`.
+     - Added output limit validation: if custom `max_output_bytes` exceeds `MAX_RUNNER_OUTPUT_BYTES` (64 KiB runner pipe cap), the request is rejected with `SANDBOX_ERROR` and a clear explanatory message.
+     - Enhanced Stage 1 compilation verification: if the compiler exits with 0 and `OK` status but fails to produce the expected artifact binary, the pipeline immediately fails closed with `COMPILE_ERROR`, purging any partial state and guaranteeing Stage 2 execution (`RUNNING`) never starts.
+     - Implemented software output bounding in Stage 2 execution: if total stdout/stderr exceeds a requested `max_output_bytes` (<= 64 KiB), output is truncated to the requested cap and the final milestone is mapped to `OUTPUT_LIMIT`.
+  3. In `tests/test_pipeline.py`:
+     - Added `test_c_compile_success_without_artifact_fails_closed` proving zero-exit compile without artifact fails as `COMPILE_ERROR` and never emits `RUNNING`.
+     - Added `test_oversized_source_rejected_before_workspace` verifying oversized source rejection without creating temporary directories.
+     - Added `test_unsupported_max_output_bytes_rejected` verifying rejection of limits exceeding runner capability.
+     - Added `test_custom_max_output_bytes_software_truncation` verifying software output bounding and `OUTPUT_LIMIT` milestone.
+     - Updated `test_c_success_milestones` with `ArtifactCreatingMockRunner` simulating realistic compiler artifact creation.
+  4. Preserved Tier A boundary: zero modifications made to `sandbox/src/seccomp.c`, `sandbox/src/runner.c`, or other Tier A files. Compilation through the live runner remains marked blocked pending Piyush's authorization of a compiler-specific seccomp profile.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 21/21 tests passed in 0.894s.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero errors.
+- Files: `PROGRESS.md`, `engine/models.py`, `engine/pipeline.py`, `tests/test_pipeline.py`.
+- Linked: LOG-0020.
+- Status: Tier B correctness gaps resolved on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
+- Tutor review: pending
