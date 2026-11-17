@@ -82,3 +82,37 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: `PROGRESS.md`, `README.md`, `docs/01_ARCHITECTURE.md`, `scripts/check_progress_append_only.sh`, `scripts/check_repo_hygiene.sh`, `scripts/hooks/pre-commit`, `scripts/test_append_only.sh`.
 - Linked: LOG-0004.
 - Tutor review: pending
+
+
+## [LOG-0006] 2026-11-17 12:10 IST | PLAN | actor: agent
+- Goal: Prepare Phase 1 C sandbox runner skeleton with Tier A TODO markers for Piyush, header definitions, and build configuration.
+- Steps:
+  1. Create `sandbox/include/runner.h`: declare `runner_config_t`, `runner_result_t`, and lifecycle functions.
+  2. Create `sandbox/src/cgroup.c`: skeleton for cgroups v2 (`mkdir`, `pids.max`, `memory.max`, `rmdir`) with `TODO(Piyush)` guidance.
+  3. Create `sandbox/src/seccomp.c`: skeleton for seccomp-bpf filter with `TODO(Piyush)` guidance.
+  4. Create `sandbox/src/runner.c`: skeleton for monotonic timing, pipes, fork/execve, poll loop, and wait4 with `TODO(Piyush)` guidance.
+  5. Create `sandbox/Makefile`: strict compilation with `-Wall -Wextra -Werror -O2 -lseccomp`.
+- Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/include/runner.h`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/src/seccomp.c`.
+- Linked: LOG-0005.
+- Tutor review: pending
+
+
+## [LOG-0007] 2026-11-17 12:12 IST | DONE | actor: agent
+- Goal: Prepare Phase 1 C sandbox runner skeleton with Tier A TODO markers for Piyush, header definitions, and build configuration.
+- Outcome:
+  1. Authoring of Phase 1 Skeletons:
+     - Authored `sandbox/include/runner.h` defining configuration limits, metrics structs, and lifecycle function contracts.
+     - Authored `sandbox/src/cgroup.c` with detailed conceptual guides and `TODO(Piyush)` markers for cgroups v2 directory creation, limits, and cleanup.
+     - Authored `sandbox/src/seccomp.c` with guidance and `TODO(Piyush)` markers for default-deny seccomp filter setup.
+     - Authored `sandbox/src/runner.c` with process lifecycle guidance and `TODO(Piyush)` markers for pipes, fork, execve, poll loop, and wait4 rusage extraction.
+     - Authored `sandbox/Makefile` compiling cleanly under `-Wall -Wextra -Werror -O2 -lseccomp`.
+  2. Respecting Tier A Boundary:
+     - Did not author the protected core implementation. Maintained explicit `TODO(Piyush)` markers for Piyush to author or authorize.
+- Verification:
+  - `make -C sandbox`: compiled cleanly with 0 warnings and 0 errors
+  - `make -C sandbox test`: executed `./pes2-runner /bin/true` cleanly
+  - `make -C sandbox clean`: cleaned object files and target binary
+  - `scripts/hooks/pre-commit`: validated repository hygiene and append-only rules
+- Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/include/runner.h`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/src/seccomp.c`.
+- Linked: LOG-0006.
+- Tutor review: pending
