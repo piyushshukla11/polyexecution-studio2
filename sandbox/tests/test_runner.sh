@@ -35,19 +35,37 @@ DISCOVERED_ROOT=$(bash "$DISCOVERY_SCRIPT" 2>/dev/null)
 DISCOVERY_STATUS=$?
 set -e
 
-if [ "$DISCOVERY_STATUS" -ne 0 ] || [ -z "$DISCOVERED_ROOT" ]; then
-    echo "  [SKIP] Runtime isolation cases require a writable delegated cgroup v2 subtree."
-    echo "         No valid delegated subtree with cpu, memory, and pids was found."
-    echo "         Set PES2_CGROUP_ROOT explicitly or enable systemd user cgroup delegation."
-    echo "STATUS: BLOCKED_OR_SKIPPED (0 runtime isolation tests executed, 1 fail-closed test passed)"
+report_skipped() {
+    local reason="$1"
+    local action="$2"
+    echo "========================================================================"
+    echo "PES2 RUNNER TEST SUMMARY: PARTIAL (RUNTIME ISOLATION SKIPPED)"
+    echo "  Fail-closed unit check:    PASSED (1/1)"
+    echo "  Runtime isolation tests:   SKIPPED (0/10 executed)"
+    echo "    Reason: $reason"
+    echo "    Remedy: $action"
+    echo "------------------------------------------------------------------------"
+    echo "WARNING: Runtime sandbox isolation was NOT verified in this run."
+    echo "Do NOT treat this output or build success as meeting Phase 1 DoD."
+    echo "STATUS: BLOCKED_OR_SKIPPED"
+    echo "========================================================================"
+    if [ "${PES2_REQUIRE_RUNTIME:-0}" = "1" ]; then
+        echo "ERROR: Runtime isolation required (PES2_REQUIRE_RUNTIME=1) but skipped." >&2
+        exit 1
+    fi
     exit 0
+}
+
+if [ "$DISCOVERY_STATUS" -ne 0 ] || [ -z "$DISCOVERED_ROOT" ]; then
+    report_skipped \
+        "No writable delegated cgroup v2 subtree found with cpu, memory, and pids." \
+        "Set PES2_CGROUP_ROOT explicitly or enable systemd user delegation."
 fi
 
 if ! unshare --user --map-root-user --mount --pid --net --ipc --fork /usr/bin/true 2>/dev/null; then
-    echo "  [SKIP] Runtime isolation cases require Linux namespace support (CLONE_NEWUSER/CLONE_NEWPID/CLONE_NEWNS)."
-    echo "         Namespace clone is restricted in this subshell/container environment."
-    echo "STATUS: BLOCKED_OR_SKIPPED (0 runtime isolation tests executed, 1 fail-closed test passed)"
-    exit 0
+    report_skipped \
+        "Linux user namespaces restricted in this subshell/container environment." \
+        "Run in an environment with unprivileged user namespace support enabled."
 fi
 
 CGROUP_ROOT="$DISCOVERED_ROOT"
@@ -99,4 +117,21 @@ pass "SIGTERM cancels the run and cleans its cgroup"
 leftovers=$(find "$CGROUP_ROOT" -maxdepth 1 -type d -name 'pes2-*' -print 2>/dev/null | wc -l | tr -d ' ')
 [ "$leftovers" -eq 0 ] || fail "runner cgroups remain after tests: $leftovers"
 
- echo "SUCCESS: all runner runtime cases passed with delegated cgroups."
+echo "========================================================================"
+echo "PES2 RUNNER TEST SUMMARY: FULL PASS"
+echo "  Fail-closed unit check:    PASSED (1/1)"
+echo "  Runtime isolation tests:   PASSED (10/10 fixtures verified)"
+echo "  Verified isolation dimensions:"
+echo "    - Normal exit (OK)"
+echo "    - Nonzero exit (RUNTIME_ERROR)"
+echo "    - Wall timeout (TIMEOUT)"
+echo "    - Output cap (OUTPUT_LIMIT: exact 64 KiB cap)"
+echo "    - Memory containment (MEMORY_LIMIT: SIGKILL 9, no swap paging)"
+echo "    - PID limit (OK: PIDS_LIMIT_REACHED)"
+echo "    - Fork bomb containment (TIMEOUT: pids.max containment)"
+echo "    - Network isolation (BLOCKED_BY_POLICY)"
+echo "    - Filesystem isolation (OK: private rootfs)"
+echo "    - Process cancellation & cgroup cleanup (CANCELLED: 0 leftovers)"
+echo "------------------------------------------------------------------------"
+echo "STATUS: ALL_PASSED (Phase 1 runtime isolation verified against delegated cgroup)"
+echo "========================================================================"
