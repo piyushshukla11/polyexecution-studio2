@@ -429,3 +429,55 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0022.
 - Status: CLI entrypoint implemented on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
 - Tutor review: pending
+
+
+## [LOG-0024] 2026-11-17 22:27 IST | PLAN | actor: agent
+- Goal: Harden Tier B CLI input handling: bounded source file/stdin reading (MAX_SOURCE_BYTES + 1), UTF-8 decoding validation, positive/runner-bounded resource limit validation, and adapter-default limit preservation.
+- Reason: Tutor review identified: (1) unbounded file/pipe reads risk host memory exhaustion before size checks; (2) unvalidated resource limits could pass invalid or negative values to runners; (3) overriding a single limit erroneously replaced all other limits with generic defaults instead of the adapter's tuned values.
+- Steps:
+  1. Define runner capability bounds in engine/models.py matching runner.h: RUNNER_MIN_TIMEOUT_MS (1), RUNNER_MAX_TIMEOUT_MS (60000), RUNNER_MIN_MEMORY_KB (16384), RUNNER_MAX_MEMORY_KB (1048576), RUNNER_MAX_PIDS (128).
+  2. In engine/cli.py:
+     - Implement bounded binary reading functions for --source-file and stdin reading at most MAX_SOURCE_BYTES + 1 bytes.
+     - Reject oversized file/stream inputs immediately with clear error without loading full inputs into memory.
+     - Handle invalid UTF-8 byte sequences and OS read errors with clear error messages and non-zero exit.
+     - Validate custom resource limits against runner bounds; reject negative, zero, or out-of-range values.
+     - When overriding resource limits, inherit unspecified limits from the target adapter's default_resource_limits rather than hardcoded generic values.
+  3. In tests/test_cli.py:
+     - Add tests for oversized source file rejection via bounded read.
+     - Add tests for oversized stdin stream rejection via bounded read.
+     - Add tests for invalid UTF-8 in file and stdin.
+     - Add tests for invalid limits (negative wall-ms, wall-ms > 60000, memory-kb < 16384, memory-kb > 1048576, pids <= 0, max-output-bytes <= 0).
+     - Add test for single-limit override verifying preservation of adapter defaults.
+  4. Run test suites, append-only verification, repo hygiene checks, and git diff checks.
+- Files: PROGRESS.md, engine/models.py, engine/cli.py, tests/test_cli.py.
+- Linked: LOG-0023.
+- Expected: All 31+ tests pass; memory-bounded input reads enforced; runner capabilities validated; adapter defaults preserved; Tier A files untouched.
+- Tutor review: pending
+
+
+## [LOG-0025] 2026-11-17 22:54 IST | DONE | actor: agent
+- Goal: Harden Tier B CLI input handling: bounded source file/stdin reading (MAX_SOURCE_BYTES + 1), UTF-8 decoding validation, positive/runner-bounded resource limit validation, and adapter-default limit preservation.
+- Outcome:
+  1. Defined runner capability constants in `engine/models.py`: `RUNNER_MIN_TIMEOUT_MS = 1`, `RUNNER_MAX_TIMEOUT_MS = 60000`, `RUNNER_MIN_MEMORY_KB = 16384` (16 MiB), `RUNNER_MAX_MEMORY_KB = 1048576` (1 GiB), `RUNNER_MIN_PIDS = 1`, `RUNNER_MAX_PIDS = 128`.
+  2. In `engine/cli.py`:
+     - Implemented `read_bounded_source_file` and `read_bounded_source_stream` reading at most `MAX_SOURCE_BYTES + 1` bytes in binary mode; rejects oversized source inputs immediately without buffering full files or streams into memory.
+     - Added UTF-8 decode error handling for file and standard input reads with clear diagnostic messages and exit code 1.
+     - Implemented `validate_resource_limits` checking custom resource limits against runner bounds (`wall_ms`, `cpu_ms`, `memory_kb`, `pids`, `max_output_bytes`); rejects negative, zero, or out-of-range limits safely.
+     - When custom limits are provided, unspecified limits now inherit from the target adapter's `default_resource_limits` (e.g. Python 3's 128 MiB memory limit and 2000 ms CPU ceiling) rather than substituting generic defaults.
+  3. In `tests/test_cli.py`:
+     - Added tests for oversized source file rejection via bounded read.
+     - Added tests for oversized stdin stream rejection via bounded read.
+     - Added tests for invalid UTF-8 byte sequences in file and stdin inputs.
+     - Added tests for invalid limits (`wall_ms`, `memory_kb`, `pids`, `max_output_bytes`).
+     - Added test verifying adapter-default preservation when overriding a single limit (`--wall-ms 4500` preserves Python 3's 128 MiB memory and 2000 ms CPU defaults).
+  4. Preserved Tier A boundary: zero changes made to `sandbox/src/` or C runner files.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 34/34 tests passed in 0.980s.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `engine/models.py`, `engine/cli.py`, `tests/test_cli.py`.
+- Linked: LOG-0024.
+- Status: Tier B CLI input validation and bounded reads completed on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
+- Tutor review: pending
