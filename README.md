@@ -42,13 +42,13 @@ PolyExecution Studio 2 is a high-performance, multi-language remote execution en
 | 24 | **PostgreSQL** | `PostgreSQL 18` | `psql 18.6` client installed | SQL Database |
 | 25 | **Pandas** | `Python 3.14 + Pandas 3.1.0 + NumPy 2.5.4` | `python3` installed; libs missing | Data Science |
 | 26 | **React** | `Node.js 18 + React 18.2.0` | `Node.js` installed | Web Framework |
-| 27 | **Vanilla JS** | Browser DOM JavaScript sandbox | Browser environment | Web Frontend |
+| 27 | **Vanilla JS** | `ECMAScript 2023` (standard ECMAScript runtime) | Dedicated harness missing | Interpreted / V8 |
 
 ---
 
 ## 3. Project Documentation
 
-- [`AI_RULES.md`](file:///home/zogratis/Projects/Personal%20Projects/polyexecution-studio2/AI_RULES.md): Mandatory engineering, security, and governance standards.
-- [`PROGRESS.md`](file:///home/zogratis/Projects/Personal%20Projects/polyexecution-studio2/PROGRESS.md): Append-only engineering log.
-- [`docs/01_ARCHITECTURE.md`](file:///home/zogratis/Projects/Personal%20Projects/polyexecution-studio2/docs/01_ARCHITECTURE.md): Multi-layer security model, runtime adapter contract, and database sandbox design.
-- [`docs/04_BUILD_PLAN.md`](file:///home/zogratis/Projects/Personal%20Projects/polyexecution-studio2/docs/04_BUILD_PLAN.md): 10-phase staged implementation roadmap.
+- [AI_RULES.md](AI_RULES.md): Mandatory engineering, security, and governance standards.
+- [PROGRESS.md](PROGRESS.md): Append-only engineering log.
+- [docs/01_ARCHITECTURE.md](docs/01_ARCHITECTURE.md): Multi-layer security model, runtime adapter contract, and database sandbox design.
+- [docs/04_BUILD_PLAN.md](docs/04_BUILD_PLAN.md): 10-phase staged implementation roadmap.
