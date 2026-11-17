@@ -396,3 +396,36 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0020.
 - Status: Tier B correctness gaps resolved on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
 - Tutor review: pending
+
+
+## [LOG-0022] 2026-11-17 22:01 IST | PLAN | actor: agent
+- Goal: Add CLI runner entrypoint (`engine/cli.py`) with structured JSON telemetry emission and automated CLI tests.
+- Reason: Provides an executable interface for invoking the Phase 2 runtime adapter pipeline from the shell, inspecting truthful milestone events, and testing requests end-to-end without requiring manual harness scripts.
+- Steps:
+  1. Implement `engine/cli.py` parsing `--language`, `--source-file`, `--source`, `--stdin`, `--wall-ms`, `--cpu-ms`, `--memory-kb`, `--pids`, and `--max-output-bytes`.
+  2. Emit execution results as structured JSON containing milestones, exit code, signal, kernel timings, memory, stdout, and stderr.
+  3. Implement `tests/test_cli.py` testing argument validation, JSON formatting, milestone serialization, and error exit codes.
+  4. Run test suites, append-only verification, repo hygiene checks, and git diff checks.
+- Files: PROGRESS.md, engine/cli.py, tests/test_cli.py.
+- Linked: LOG-0021.
+- Expected: CLI works seamlessly with both mock and native runners; structured JSON output conforms to architecture schema; all tests pass; hygiene rules preserved.
+- Tutor review: pending
+
+
+## [LOG-0023] 2026-11-17 22:08 IST | DONE | actor: agent
+- Goal: Add CLI runner entrypoint (`engine/cli.py`) with structured JSON telemetry emission and automated CLI tests.
+- Outcome:
+  1. Implemented `engine/cli.py` providing a CLI entrypoint for invoking the runtime adapter pipeline with explicit flags (`--language`, `--source`, `--source-file`, `--stdin`, `--wall-ms`, `--cpu-ms`, `--memory-kb`, `--pids`, `--max-output-bytes`, `--runner`, `--cgroup-root`).
+  2. Structured JSON output formats request metadata, truthful milestone sequences, exit codes, signals, kernel timings, memory usage, stdout, stderr, and compiler diagnostics.
+  3. Added `tests/test_cli.py` (5 tests) covering Python execution success, source-file input, invalid language rejection, missing source handling, and unsupported output cap rejection.
+  4. Preserved Tier A boundary: zero changes made to `sandbox/src/` or C runner files.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 26/26 tests passed in 1.046s.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `engine/cli.py`, `tests/test_cli.py`.
+- Linked: LOG-0022.
+- Status: CLI entrypoint implemented on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
+- Tutor review: pending
