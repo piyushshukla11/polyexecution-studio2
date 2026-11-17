@@ -251,3 +251,50 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0014.
 - Status: Phase 1 runtime DoD remains UNVERIFIED in environments lacking delegated cgroups or unprivileged user namespaces. Skips are now loudly and unambiguously reported.
 - Tutor review: pending
+
+
+## [LOG-0016] 2026-11-17 17:57 IST | PLAN | actor: agent
+- Goal: Record Piyush's host execution and end-to-end verification of the Phase 1 C sandbox runner with strict cgroups v2 and namespace isolation.
+- Reason: Piyush independently executed the full strict test suite on the host environment with delegated cgroup v2 subtree and user namespace capabilities, closing the Phase 1 runtime isolation verification requirement.
+- Steps:
+  1. Record host verification results in PROGRESS.md linking to LOG-0015.
+  2. Run append-only verification suite (`scripts/test_append_only.sh`) and checker script (`scripts/check_progress_append_only.sh`).
+  3. Run repository hygiene (`scripts/check_repo_hygiene.sh`) and diff check (`git diff --check`).
+- Files: `PROGRESS.md`.
+- Linked: LOG-0015.
+- Expected: Progress history accurately reflects the owner's host verification run without exceeding reported results; Phase 1 ready for tutor review while remaining unmerged.
+- Tutor review: pending
+
+
+## [LOG-0017] 2026-11-17 17:58 IST | DONE | actor: Piyush
+- Goal: Record Piyush's host execution and end-to-end verification of the Phase 1 C sandbox runner with strict cgroups v2 and namespace isolation.
+- Outcome:
+  1. Piyush executed the strict host test suite against the delegated systemd user cgroup subtree (`/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service`).
+  2. Strict compilation passed with `-Wall -Wextra -Werror -O2`.
+  3. All focused cgroup v2 discovery and fallback unit checks passed.
+  4. The runtime suite executed with `PES2_REQUIRE_RUNTIME=1` (`make -C sandbox test-runtime`), achieving FULL PASS across all 10/10 isolation cases:
+     - Normal exit (`OK`)
+     - Nonzero exit (`RUNTIME_ERROR`)
+     - Wall timeout (`TIMEOUT`)
+     - Output cap (`OUTPUT_LIMIT`: exact 64 KiB cap)
+     - Memory containment (`MEMORY_LIMIT`: SIGKILL 9, no swap paging)
+     - PID limit (`OK`: `PIDS_LIMIT_REACHED`)
+     - Fork bomb containment (`TIMEOUT`: `pids.max` containment)
+     - Network denial (`BLOCKED_BY_POLICY`)
+     - Filesystem isolation (`OK`: private rootfs)
+     - Process cancellation and cgroup cleanup (`CANCELLED`: zero leftover cgroups or processes).
+  5. Cleaned up all build artifacts with `make -C sandbox clean`.
+  6. Phase 1 runtime test blocker is closed and implementation is ready for tutor review. Branch remains unmerged on `phase/1-sandbox-engine`.
+- Verification:
+  - `make -C sandbox clean all`: passed.
+  - `bash sandbox/tests/test_cgroup_discovery.sh`: passed (located `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service`).
+  - `make -C sandbox test-runtime`: FULL PASS (10/10 runtime fixtures verified; zero leftover cgroups or processes).
+  - `make -C sandbox clean`: passed.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `cd /home/zogratis/Projects/Personal\ Projects/polyexecution-studio2 && bash scripts/check_repo_hygiene.sh`: passed.
+  - `cd /home/zogratis/Projects/Personal\ Projects/polyexecution-studio2 && bash scripts/check_progress_append_only.sh`: passed.
+  - `git diff --check`: passed.
+- Files: `PROGRESS.md`.
+- Linked: LOG-0016.
+- Status: Phase 1 sandbox runtime verification complete. Ready for tutor review; branch kept unmerged on `phase/1-sandbox-engine`.
+- Tutor review: pending
