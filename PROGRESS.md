@@ -37,3 +37,48 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: `AI_RULES.md`, `PROGRESS.md`, `README.md`, `docs/01_ARCHITECTURE.md`, `docs/04_BUILD_PLAN.md`.
 - Linked: LOG-0001.
 - Tutor review: pending
+
+
+## [LOG-0003] 2026-11-17 12:04 IST | CORRECTION of LOG-0002 | actor: agent
+- Goal: Correct host toolchain audit count enumeration in LOG-0002.
+- Correction: LOG-0002 stated "17 of 27 environments ... are not yet installed on the host" while enumerating 14 in parentheses. The precise audit as of 2026-11-17 across all 27 LeetCode environments shows 9 available toolchains on the host (C, C++, Python 3, Java, C#, Node.js, Ruby, Bash, PostgreSQL client) and 18 missing toolchains/packages (Rust, Go, Swift, Scala, Kotlin, PHP, Dart, Racket, Erlang, Elixir, MySQL, Oracle SQL, MS SQL, Python 2, TypeScript global tsc, Pandas/NumPy packages, React build packages, and standalone ECMAScript Vanilla JS harness).
+- Files: `PROGRESS.md`.
+- Linked: LOG-0002.
+- Tutor review: pending
+
+
+## [LOG-0004] 2026-11-17 12:05 IST | PLAN | actor: agent
+- Goal: Complete Phase 0 DoD gaps: implement append-only pre-commit hook and repository hygiene validator, add reproducible test suite, configure local core.hooksPath, replace machine-specific links in README.md, correct Vanilla JS environment specification, and refine SQL isolation architecture language.
+- Steps:
+  1. Create `scripts/check_progress_append_only.sh`: validate that `PROGRESS.md` commits contain zero deletions/modifications and zero insertions in the middle of historical entries.
+  2. Create `scripts/check_repo_hygiene.sh`: block secrets, build artifacts, junk files, stray markdown, files > 1 MB, and emojis in staged files.
+  3. Create `scripts/hooks/pre-commit`: run hygiene, append-only, and diff checks before every commit. Configure local `git config core.hooksPath scripts/hooks`.
+  4. Create `scripts/test_append_only.sh`: reproducible test proving valid append passes, while line deletion, line modification, and middle insertion are rejected.
+  5. In `README.md`: replace machine-specific `file:///` URLs with repository-relative paths (`./AI_RULES.md`, `./PROGRESS.md`, etc.); update Vanilla JS to ECMAScript 2023.
+  6. In `docs/01_ARCHITECTURE.md`: refine SQL isolation language to emphasize disposable ephemeral databases/schemas and engine-level privilege boundaries over denylists.
+- Files: `PROGRESS.md`, `README.md`, `docs/01_ARCHITECTURE.md`, `scripts/check_progress_append_only.sh`, `scripts/check_repo_hygiene.sh`, `scripts/hooks/pre-commit`, `scripts/test_append_only.sh`.
+- Linked: LOG-0003.
+- Tutor review: pending
+
+
+## [LOG-0005] 2026-11-17 12:07 IST | DONE | actor: agent
+- Goal: Complete Phase 0 DoD gaps: implement append-only pre-commit hook and repository hygiene validator, add reproducible test suite, configure local core.hooksPath, replace machine-specific links in README.md, correct Vanilla JS environment specification, and refine SQL isolation architecture language.
+- Outcome:
+  1. Append-Only Enforcement & Hook Configuration:
+     - Implemented `scripts/check_progress_append_only.sh` detecting historical deletions, line modifications, and middle insertions.
+     - Configured local clone `core.hooksPath` to `scripts/hooks` with executable `pre-commit` hook.
+     - Created `scripts/test_append_only.sh` and verified 4/4 passing scenarios (valid append accepted, line modification blocked, line deletion blocked, middle insertion blocked).
+  2. Repository Hygiene Validator:
+     - Implemented `scripts/check_repo_hygiene.sh` preventing staged secrets, build artifacts, stray markdown files, files > 1 MB, and emojis.
+  3. Documentation Corrections:
+     - In `README.md`: replaced machine-specific `file:///` URLs with repo-relative links; corrected Vanilla JS specification to ECMAScript 2023.
+     - In `docs/01_ARCHITECTURE.md`: refined SQL isolation architecture to emphasize disposable per-request databases, kernel/engine isolation, and non-reliance on keyword denylists.
+     - In `PROGRESS.md`: logged CORRECTION entry `[LOG-0003]` clarifying 9 available and 18 missing host toolchains across the 27 LeetCode environments.
+- Verification:
+  - `bash scripts/test_append_only.sh`: 4/4 passed
+  - `bash scripts/check_repo_hygiene.sh`: passed cleanly (0 hygiene errors)
+  - `bash scripts/check_progress_append_only.sh`: passed cleanly (append-only validated)
+  - `git diff --check`: passed cleanly (0 whitespace/diff errors)
+- Files: `PROGRESS.md`, `README.md`, `docs/01_ARCHITECTURE.md`, `scripts/check_progress_append_only.sh`, `scripts/check_repo_hygiene.sh`, `scripts/hooks/pre-commit`, `scripts/test_append_only.sh`.
+- Linked: LOG-0004.
+- Tutor review: pending

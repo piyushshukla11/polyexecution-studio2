@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# PolyExecution Studio 2 Git Pre-Commit Hook
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+# Run repository hygiene check
+bash "$REPO_ROOT/scripts/check_repo_hygiene.sh"
+
+# Run append-only PROGRESS.md check
+bash "$REPO_ROOT/scripts/check_progress_append_only.sh"
+
+# Check for whitespace/diff errors
+git diff --cached --check

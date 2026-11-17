@@ -66,9 +66,10 @@ Rather than hardcoding language commands into monolithic handlers, each runtime 
 3. **Seccomp-BPF Syscall Filter**:
    - Default deny architecture.
    - System calls allowing file creation outside `/workspace`, hardware configuration (`reboot`, `syslog`), kernel keyrings, or network sockets are blocked at the kernel syscall boundary.
-4. **Disposable SQL Database Architecture**:
-   - Each SQL run operates on an ephemeral, in-memory or transient database container/schema generated per `requestId`.
-   - Schemas are destroyed immediately upon query execution completion or timeout.
+4. **Disposable Ephemeral SQL Database Architecture**:
+   - Each SQL run operates against a fresh, disposable in-memory or transient database instance/schema provisioned strictly per `requestId`.
+   - Databases are destroyed and unlinked immediately upon query execution completion, timeout, or cancellation; no shared persistent state is retained across requests.
+   - Security Boundary: Enforced at the engine and kernel level rather than through fragile keyword denylists. The execution role operates with minimal read-only or strictly bounded schema privileges (`NO SUPERUSER`, `NOCREATEDB`), with engine-level file import/export primitives completely disabled in daemon configurations (`COPY PROGRAM`, `LOAD DATA INFILE`, `pg_read_file`). Network access is denied via `CLONE_NEWNET`. Textual parser denylists are never relied upon as a primary defense boundary.
 
 ---
 
