@@ -66,6 +66,12 @@ class SeccompPolicyProfile(str, Enum):
 
 MAX_SOURCE_BYTES: int = 65536
 MAX_RUNNER_OUTPUT_BYTES: int = 65536
+RUNNER_MIN_TIMEOUT_MS: int = 1
+RUNNER_MAX_TIMEOUT_MS: int = 60000
+RUNNER_MIN_MEMORY_KB: int = 16384
+RUNNER_MAX_MEMORY_KB: int = 1048576
+RUNNER_MIN_PIDS: int = 1
+RUNNER_MAX_PIDS: int = 128
 
 
 @dataclass(frozen=True)
