@@ -16,9 +16,8 @@ $(TARGET): $(OBJS)
 src/%.o: src/%.c include/runner.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+test: $(TARGET)
+	bash tests/test_runner.sh
+
 clean:
 	rm -f $(OBJS) $(TARGET)
-
-test: $(TARGET)
-	@echo "Running skeleton check..."
-	./$(TARGET) /bin/true
