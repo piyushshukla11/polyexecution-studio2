@@ -29,12 +29,29 @@ else
     fail "Runner did not fail closed (status=$FAIL_CLOSED_STATUS, output=$FAIL_CLOSED_OUT)"
 fi
 
-CGROUP_ROOT="${PES2_CGROUP_ROOT:-/sys/fs/cgroup}"
-if [ ! -w "$CGROUP_ROOT/cgroup.subtree_control" ]; then
-    echo "  [SKIP] Runtime isolation cases require a writable delegated cgroup v2 subtree ($CGROUP_ROOT)"
-    echo "SUCCESS: fail-closed test passed; runtime cases skipped because cgroup delegation is unavailable."
+DISCOVERY_SCRIPT="$SANDBOX/tests/discover_cgroup.sh"
+set +e
+DISCOVERED_ROOT=$(bash "$DISCOVERY_SCRIPT" 2>/dev/null)
+DISCOVERY_STATUS=$?
+set -e
+
+if [ "$DISCOVERY_STATUS" -ne 0 ] || [ -z "$DISCOVERED_ROOT" ]; then
+    echo "  [SKIP] Runtime isolation cases require a writable delegated cgroup v2 subtree."
+    echo "         No valid delegated subtree with cpu, memory, and pids was found."
+    echo "         Set PES2_CGROUP_ROOT explicitly or enable systemd user cgroup delegation."
+    echo "STATUS: BLOCKED_OR_SKIPPED (0 runtime isolation tests executed, 1 fail-closed test passed)"
     exit 0
 fi
+
+if ! unshare --user --map-root-user --mount --pid --net --ipc --fork /usr/bin/true 2>/dev/null; then
+    echo "  [SKIP] Runtime isolation cases require Linux namespace support (CLONE_NEWUSER/CLONE_NEWPID/CLONE_NEWNS)."
+    echo "         Namespace clone is restricted in this subshell/container environment."
+    echo "STATUS: BLOCKED_OR_SKIPPED (0 runtime isolation tests executed, 1 fail-closed test passed)"
+    exit 0
+fi
+
+CGROUP_ROOT="$DISCOVERED_ROOT"
+echo "  [INFO] Using delegated cgroup root: $CGROUP_ROOT"
 
 run_case() {
     local name="$1" expected_status="$2" target="$3" wall_ms="$4" cpu_ms="$5"
@@ -57,6 +74,8 @@ run_case TIMEOUT 2 /workspace/timeout 300 1000
 run_case OUTPUT_LIMIT 3 /workspace/output_flood 3000 1000
 [ "$(wc -c < "$TMP_DIR/OUTPUT_LIMIT.stdout" | tr -d ' ')" -eq 65536 ] || fail "output cap was not exactly 65536 bytes"
 run_case MEMORY_LIMIT 4 /workspace/memory_bomb 3000 1000 --memory-kb 65536
+grep -q "signal=9" "$TMP_DIR/MEMORY_LIMIT.stderr" || fail "MEMORY_LIMIT did not record SIGKILL (signal=9)"
+[ "$(wc -c < "$TMP_DIR/MEMORY_LIMIT.stdout" | tr -d ' ')" -eq 0 ] || fail "MEMORY_LIMIT emitted unexpected stdout"
 run_case OK 0 /workspace/pids_limit 3000 1000 --pids 8
 grep -q "PIDS_LIMIT_REACHED" "$TMP_DIR/OK.stdout" || fail "pids.max did not contain fork creation"
 run_case TIMEOUT 2 /workspace/fork_bomb 1500 1000 --pids 8

@@ -333,6 +333,9 @@ static int kill_sandbox(const char *root, const char *name, pid_t child_pid) {
 
 static int set_status_from_wait(runner_result_t *result, int wait_status,
                                 int exec_error, int oom_killed) {
+    if (WIFSIGNALED(wait_status)) {
+        result->term_signal = WTERMSIG(wait_status);
+    }
     if (exec_error != 0) {
         result->status = STATUS_SANDBOX_ERROR;
         return 0;
@@ -342,7 +345,6 @@ static int set_status_from_wait(runner_result_t *result, int wait_status,
         return 0;
     }
     if (WIFSIGNALED(wait_status)) {
-        result->term_signal = WTERMSIG(wait_status);
         if (result->term_signal == SIGSYS) result->status = STATUS_BLOCKED_BY_POLICY;
         else if (result->term_signal == SIGXCPU) result->status = STATUS_TIMEOUT;
         else result->status = STATUS_RUNTIME_ERROR;

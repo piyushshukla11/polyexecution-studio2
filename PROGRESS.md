@@ -179,3 +179,38 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0010.
 - Status: Phase 1 runtime DoD remains unverified until the full suite runs with a writable delegated cgroup v2 subtree. Do not mark Phase 1 complete based on the build or fail-closed test alone.
 - Tutor review: pending
+
+
+## [LOG-0012] 2026-11-17 15:45 IST | PLAN | actor: agent
+- Goal: Remediate Phase 1 verification findings: enforce memory containment under active host swap (set and verify memory.swap.max = 0) and implement automated delegated cgroup v2 subtree discovery in the test harness.
+- Reason: On hosts with swap enabled, untrusted processes paged to swap and bypassed memory.max; and test_runner.sh defaulted to unwritable /sys/fs/cgroup rather than discovering available systemd user delegations.
+- Steps:
+  1. In `sandbox/src/cgroup.c`: configure `memory.swap.max = 0` in `cgroup_init()`, verify write by reading back, and fail closed if host has active swap that cannot be constrained; expand `cgroup_oom_kill_count()` to inspect both `oom_kill` and `oom_group_kill` from `memory.events` and `memory.events.local`.
+  2. In `sandbox/src/runner.c`: preserve `term_signal` when OOM killer issues `SIGKILL`.
+  3. In `sandbox/tests/test_runner.sh`: implement automated cgroup v2 discovery inspecting `/proc/self/cgroup` ancestors and systemd user services, validating required controllers (`cpu`, `memory`, `pids`), and probing directory write/cleanup permissions while preserving `PES2_CGROUP_ROOT` as an override; add focused tests for discovery and no-delegation fallback.
+  4. Run clean compilation, memory regression test, test suite, append-only hook test, hygiene check, and diff check.
+- Files: `PROGRESS.md`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/tests/test_runner.sh`.
+- Linked: LOG-0011.
+- Tutor review: pending
+
+
+## [LOG-0013] 2026-11-17 16:04 IST | DONE | actor: agent
+- Goal: Remediate Phase 1 verification findings: enforce memory containment under active host swap and implement automated delegated cgroup v2 subtree discovery in the test harness.
+- Outcome:
+  1. Configured `memory.swap.max = 0` in `cgroup_init()`, verified write by reading back value, and failed closed if active host swap exists but cannot be constrained in the cgroup.
+  2. Enhanced `cgroup_oom_kill_count()` to read both `oom_kill` and `oom_group_kill` from `memory.events` and `memory.events.local`.
+  3. Preserved `term_signal` in `runner.c` when child is terminated by OOM killer (`SIGKILL`, signal 9).
+  4. Added `sandbox/tests/discover_cgroup.sh` and updated `sandbox/tests/test_runner.sh` to auto-discover user-delegated cgroup v2 subtrees (inspecting `/proc/self/cgroup` ancestors and systemd user services with `cpu`, `memory`, `pids`), validate controllers, and probe write/cleanup permissions while preserving `PES2_CGROUP_ROOT` as an override.
+  5. Added `sandbox/tests/test_cgroup_discovery.sh` verifying invalid overrides, dummy missing controllers, auto-discovery, and fail-closed handling.
+  6. Verified that `MEMORY_LIMIT` test fixture triggers `SIGKILL` (signal 9) and exits status 4 (`STATUS_MEMORY_LIMIT`).
+- Verification:
+  - `make -C sandbox clean all`: passed cleanly with `-Wall -Wextra -Werror -O2`.
+  - `bash sandbox/tests/test_cgroup_discovery.sh`: 4/4 passed.
+  - `make -C sandbox test`: all tests passed (including all 10 runtime isolation tests when executed with user delegated cgroup).
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `git diff --check`: passed.
+- Files: `PROGRESS.md`, `sandbox/Makefile`, `sandbox/src/cgroup.c`, `sandbox/src/runner.c`, `sandbox/tests/discover_cgroup.sh`, `sandbox/tests/test_cgroup_discovery.sh`, `sandbox/tests/test_runner.sh`.
+- Linked: LOG-0012.
+- Tutor review: pending
