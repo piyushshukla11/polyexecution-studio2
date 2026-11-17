@@ -298,3 +298,51 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0016.
 - Status: Phase 1 sandbox runtime verification complete. Ready for tutor review; branch kept unmerged on `phase/1-sandbox-engine`.
 - Tutor review: pending
+
+
+## [LOG-0018] 2026-11-17 20:27 IST | PLAN | actor: agent
+- Goal: Implement Phase 2 typed RuntimeAdapter and RuntimeRegistry engine with truthful milestones, isolated compilation and execution pipelines for C, C++, and Python 3, and stale artifact prevention.
+- Reason: docs/04_BUILD_PLAN.md Phase 2 requires typed adapters, Stage 1 compile and Stage 2 execute pipelines for C/C++, single-stage pipeline for Python 3, truthful milestone events, explicit executable paths/argv vectors, and verified cleanup.
+- Steps:
+  1. Add Python bytecode patterns (__pycache__/, *.pyc) to .gitignore to avoid unstaged junk.
+  2. Implement engine/models.py defining LanguageId, RuntimeFamily, Milestone, ResourceLimits, CompileSpec, ExecutionSpec, SeccompPolicyProfile, CleanupSpec, ExecutionRequest, MilestoneEvent, and ExecutionResult.
+  3. Implement engine/registry.py defining RuntimeRegistry with Tier 1 adapters for C (gcc), C++ (clang++), and Python 3 (python3) using explicit absolute executable paths and immutable argv vectors.
+  4. Implement engine/runner.py defining RunnerInterface with NativeSandboxRunner (calling sandbox/pes2-runner) and MockSandboxRunner for hermetic unit testing.
+  5. Implement engine/pipeline.py defining ExecutionPipeline enforcing ephemeral workspace isolation, truthful milestone sequences (ACCEPTED -> COMPILING -> RUNNING -> COMPLETED or COMPILE_ERROR for C/C++; ACCEPTED -> RUNNING -> COMPLETED for Python 3), guaranteed cleanup, and stale artifact defense.
+  6. Implement automated unit tests in tests/test_registry.py and tests/test_pipeline.py covering registration, explicit arguments, truthful milestones, compile failure isolation, stale artifact defense, and workspace cleanup.
+  7. Run test suites, append-only verification, repo hygiene checks, and git diff checks.
+- Files: .gitignore, PROGRESS.md, engine/__init__.py, engine/models.py, engine/registry.py, engine/runner.py, engine/pipeline.py, tests/__init__.py, tests/test_registry.py, tests/test_pipeline.py.
+- Linked: LOG-0017.
+- Expected: All unit tests pass cleanly; milestones are emitted truthfully without synthetic COMPILING for Python 3; compilers and runners use explicit paths; zero orphaned files or leaked processes; hygiene checks pass.
+- Tutor review: pending
+
+
+## [LOG-0019] 2026-11-17 20:55 IST | DONE | actor: agent
+- Goal: Implement Phase 2 typed RuntimeAdapter and RuntimeRegistry engine with truthful milestones, isolated compilation and execution pipelines for C, C++, and Python 3, and stale artifact prevention.
+- Outcome:
+  1. Updated `.gitignore` to ignore Python bytecode artifacts (`__pycache__/`, `*.pyc`, `.pytest_cache/`).
+  2. Implemented `engine/models.py` with strongly typed enum and dataclass representations for `LanguageId`, `RuntimeFamily`, `Milestone`, `ResourceLimits`, `CompileSpec`, `ExecutionSpec`, `SeccompPolicyProfile`, `CleanupSpec`, `ExecutionRequest`, `MilestoneEvent`, `RunnerResult`, and `ExecutionResult`.
+  3. Implemented `engine/registry.py` registering Tier 1 runtime adapters:
+     - C (`LanguageId.C`): `gcc 14` official, `/usr/bin/gcc` installed, 2-stage compile (`-O2`, `-std=gnu11`, `-Wall`, `-Wextra`, `-Werror`) to `/workspace/a.out` and bounded execution with `STRICT_NATIVE` seccomp.
+     - C++ (`LanguageId.CPP`): `clang 19` official, `/usr/bin/clang++` (or `/usr/bin/g++`) installed, 2-stage compile (`-O2`, `-std=c++20`, `-Wall`, `-Wextra`, `-Werror`) to `/workspace/a.out` and bounded execution.
+     - Python 3 (`LanguageId.PYTHON3`): `Python 3.14` official, `/usr/bin/python3` installed, single-stage interpreted execution (`compile_spec=None`) with `/usr/bin/python3 /workspace/solution.py`.
+  4. Implemented `engine/runner.py` with `RunnerInterface`, `NativeSandboxRunner` (parsing `pes2-runner` output and exit statuses), and `MockSandboxRunner` for hermetic testing.
+  5. Implemented `engine/pipeline.py` enforcing:
+     - Ephemeral workspace isolation (`/tmp/pes2-work-XXXXXX` mode `0700`) with guaranteed cleanup on all exit paths.
+     - Truthful milestone sequence for compiled runtimes: `ACCEPTED -> COMPILING -> RUNNING -> COMPLETED` (or `COMPILE_ERROR`).
+     - Truthful milestone sequence for interpreted runtimes: `ACCEPTED -> RUNNING -> COMPLETED` without synthetic `COMPILING`.
+     - Compile failure isolation: terminates immediately upon compile failure; `RUNNING` is never emitted.
+     - Stale artifact defense: removes pre-existing or planted artifacts before compile and upon compile failure to ensure broken builds never execute stale binaries.
+  6. Added top-level `Makefile` with `test`, `test-engine`, `check`, and `clean` targets.
+  7. Implemented unit test suite in `tests/test_registry.py` (5 tests), `tests/test_pipeline.py` (9 tests), and `tests/test_runner.py` (3 tests) covering adapter contracts, explicit argv vectors, truthful milestones, stale artifact defense, and workspace cleanup.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 17/17 tests passed in 0.652s.
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED with clear warning notice as expected inside container subshell.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `.gitignore`, `Makefile`, `PROGRESS.md`, `engine/__init__.py`, `engine/models.py`, `engine/pipeline.py`, `engine/registry.py`, `engine/runner.py`, `tests/__init__.py`, `tests/test_pipeline.py`, `tests/test_registry.py`, `tests/test_runner.py`.
+- Linked: LOG-0018.
+- Status: Phase 2 vertical slice engine implemented on branch `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Tier A sandbox C code untouched.
+- Tutor review: pending

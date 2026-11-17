@@ -10,6 +10,9 @@ target/
 *.class
 *.jar
 *.exe
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # Dependencies
 node_modules/
