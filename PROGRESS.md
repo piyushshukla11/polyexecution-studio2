@@ -846,3 +846,65 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: PROGRESS.md, engine/models.py, engine/registry.py, engine/pipeline.py, tests/test_registry.py, tests/test_runner.py, tests/test_pipeline.py.
 - Linked: LOG-0038.
 - Tutor review: pending
+
+
+## [LOG-0042] 2026-11-18 15:02 IST | PLAN | actor: agent
+- Goal: Install `grpcio` and `grpcio-tools` in Python environment, define `proto/execution.proto`, compile async gRPC stubs into `engine/daemon/proto/`, implement the Python `grpc.aio` worker daemon (`engine/daemon/`), and add test coverage for live milestone streaming, synchronization, cancellation, and concurrency bounding.
+- Reason: As decided in LOG-0037, Phase 3 implements an asynchronous Python worker daemon (`grpc.aio`) directly driving `engine/pipeline.py` and `engine/registry.py`. The daemon must provide streaming milestone updates (`ACCEPTED` -> `COMPILING` -> `RUNNING` -> `COMPLETED`/errors) in real-time to connected clients, support health checks, list supported runtimes truthfully, propagate client cancellations to terminate running sandboxes, and run synchronous sandbox execution off the asyncio event loop using a bounded thread pool executor.
+- Steps:
+  1. Install `grpcio` and `grpcio-tools` via `pip install grpcio grpcio-tools`.
+  2. Create `proto/execution.proto` specifying:
+     - `ExecutionService`:
+       - `ExecuteStream`: streaming RPC returning `ExecutionMilestone` events in real-time followed by the final `ExecutionResult`.
+       - `ExecuteSync`: unary RPC returning complete `ExecutionResult`.
+       - `GetSupportedRuntimes`: unary query listing available adapters and installed versions.
+       - `HealthCheck`: unary service health status.
+  3. Compile `proto/execution.proto` to generate `execution_pb2.py` and `execution_pb2_grpc.py` in `engine/daemon/proto/`.
+  4. Implement `engine/daemon/service.py`:
+     - Implement `ExecutionServiceServicer` using `grpc.aio`.
+     - Dispatch `ExecutionPipeline.execute()` onto a bounded `concurrent.futures.ThreadPoolExecutor`.
+     - Implement milestone callback bridge to push events to the async gRPC streaming queue as they occur.
+     - Handle RPC cancellation by cancelling pending futures and terminating child sandbox processes.
+  5. Implement `engine/daemon/server.py`:
+     - Async gRPC server initialization, port binding, and graceful shutdown handling.
+  6. Add unit and integration tests in `tests/test_daemon.py`:
+     - Test live streaming milestone events for Python, C, and Bash.
+     - Test synchronous execution RPC.
+     - Test runtime registry inspection RPC.
+     - Test cancellation propagation and workspace cleanup.
+- Files: PROGRESS.md, proto/execution.proto, engine/daemon/proto/__init__.py, engine/daemon/service.py, engine/daemon/server.py, tests/test_daemon.py.
+- Linked: LOG-0037.
+- Expected: All daemon tests pass cleanly; streaming RPC yields ordered milestones; concurrency is bounded; clean shutdown and zero process leakage verified.
+- Tutor review: pending
+
+
+## [LOG-0043] 2026-11-18 15:46 IST | DONE | actor: agent
+- Goal: Implemented and verified asynchronous Python `grpc.aio` worker daemon (`engine/daemon/`), protocol buffers definition (`proto/execution.proto`), and live milestone streaming bridge in `engine/pipeline.py`.
+- Outcome:
+  - Installed `grpcio` (1.85.3), `grpcio-tools` (1.85.3), and `protobuf` (7.36.2) in Python environment.
+  - Created `proto/execution.proto` specifying `ExecutionWorkerService` (`ExecuteStream`, `ExecuteSync`, `GetSupportedRuntimes`, `HealthCheck`) and typed data messages.
+  - Compiled proto definitions into `proto/execution_pb2.py` and `proto/execution_pb2_grpc.py`.
+  - In `engine/pipeline.py`: Added optional `milestone_callback: Optional[Callable[[MilestoneEvent], None]] = None` to `ExecutionPipeline.execute()`, ensuring real-time event dispatch without breaking existing synchronous callers.
+  - In `engine/daemon/service.py`: Implemented `ExecutionWorkerServicer`:
+    - Dispatches synchronous sandbox pipeline runs to a bounded `ThreadPoolExecutor` off the asyncio loop.
+    - Uses thread-safe queue bridging (`loop.call_soon_threadsafe`) to push milestone events (`ACCEPTED`, `COMPILING`, `RUNNING`, `COMPLETED`/errors) to the gRPC client in real-time.
+    - Propagates cancellation if the client disconnects or cancels the RPC.
+    - Implemented `GetSupportedRuntimes` returning truthful adapter and installation states.
+    - Implemented `HealthCheck` returning `SERVING` status and active worker metrics.
+  - In `engine/daemon/server.py`: Implemented `create_server`, `run_server`, and CLI entry point supporting customizable hosts, ports, concurrency ceilings, and cgroup root paths.
+  - In `tests/test_daemon.py`: Added 6 automated integration tests:
+    - `test_health_check`: verifies serving status and 0 active workers.
+    - `test_get_supported_runtimes`: verifies C, C++, Python 3, Bash installed, and Go/Rust uninstalled.
+    - `test_execute_sync_success`: tests unary RPC execution.
+    - `test_execute_stream_milestones_c`: tests streaming real-time milestones (`ACCEPTED` -> `COMPILING` -> `RUNNING` -> `COMPLETED`) followed by final result payload.
+    - `test_execute_stream_compile_error_bash`: tests streaming compile error diagnostics on syntax failure.
+    - `test_execute_uninstalled_toolchain`: tests fail-closed `SANDBOX_ERROR` on uninstalled runtimes.
+  - Verification:
+    - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 52/52 unit and integration tests PASSED in 2.02s.
+    - `bash scripts/test_append_only.sh`: 7/7 PASSED.
+    - `bash scripts/check_progress_append_only.sh`: PASSED.
+    - `bash scripts/check_repo_hygiene.sh`: PASSED.
+    - `git diff --check`: clean.
+- Files: PROGRESS.md, proto/execution.proto, proto/execution_pb2.py, proto/execution_pb2_grpc.py, proto/__init__.py, engine/daemon/__init__.py, engine/daemon/proto/__init__.py, engine/daemon/service.py, engine/daemon/server.py, engine/pipeline.py, tests/test_daemon.py.
+- Linked: LOG-0042.
+- Tutor review: pending

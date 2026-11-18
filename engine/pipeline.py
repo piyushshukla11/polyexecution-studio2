@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from engine.models import (
     ExecutionRequest,
@@ -46,22 +46,36 @@ class ExecutionPipeline:
         self.registry = registry
         self.runner = runner
 
-    def execute(self, request: ExecutionRequest) -> ExecutionResult:
+    def execute(
+        self,
+        request: ExecutionRequest,
+        milestone_callback: Optional[Callable[[MilestoneEvent], None]] = None,
+    ) -> ExecutionResult:
+        milestones: List[MilestoneEvent] = []
+
+        def emit(event: MilestoneEvent) -> None:
+            milestones.append(event)
+            if milestone_callback:
+                try:
+                    milestone_callback(event)
+                except Exception:
+                    pass
+
         # Pre-check 1: Bounded source-code size before writing to temporary storage
         source_bytes = request.source_code.encode("utf-8")
         if len(source_bytes) > MAX_SOURCE_BYTES:
             now = current_time_ms()
+            ev = MilestoneEvent(
+                Milestone.SANDBOX_ERROR,
+                now,
+                f"Source code size ({len(source_bytes)} bytes) exceeds limit ({MAX_SOURCE_BYTES} bytes)",
+            )
+            emit(ev)
             return ExecutionResult(
                 request_id=request.request_id,
                 language_id=request.language_id,
                 final_status=Milestone.SANDBOX_ERROR,
-                milestones=[
-                    MilestoneEvent(
-                        Milestone.SANDBOX_ERROR,
-                        now,
-                        f"Source code size ({len(source_bytes)} bytes) exceeds limit ({MAX_SOURCE_BYTES} bytes)",
-                    )
-                ],
+                milestones=list(milestones),
                 exit_code=1,
                 signal=0,
                 wall_ms=0,
@@ -75,11 +89,13 @@ class ExecutionPipeline:
         adapter = self.registry.get(request.language_id)
         if adapter is None:
             now = current_time_ms()
+            ev = MilestoneEvent(Milestone.SANDBOX_ERROR, now, f"Unsupported language: {request.language_id}")
+            emit(ev)
             return ExecutionResult(
                 request_id=request.request_id,
                 language_id=request.language_id,
                 final_status=Milestone.SANDBOX_ERROR,
-                milestones=[MilestoneEvent(Milestone.SANDBOX_ERROR, now, f"Unsupported language: {request.language_id}")],
+                milestones=list(milestones),
                 exit_code=1,
                 signal=0,
                 wall_ms=0,
@@ -91,17 +107,17 @@ class ExecutionPipeline:
 
         if not adapter.is_installed:
             now = current_time_ms()
+            ev = MilestoneEvent(
+                Milestone.SANDBOX_ERROR,
+                now,
+                f"Language '{request.language_id.value}' not installed on host: {adapter.installed_version}",
+            )
+            emit(ev)
             return ExecutionResult(
                 request_id=request.request_id,
                 language_id=request.language_id,
                 final_status=Milestone.SANDBOX_ERROR,
-                milestones=[
-                    MilestoneEvent(
-                        Milestone.SANDBOX_ERROR,
-                        now,
-                        f"Language '{request.language_id.value}' not installed on host: {adapter.installed_version}",
-                    )
-                ],
+                milestones=list(milestones),
                 exit_code=1,
                 signal=0,
                 wall_ms=0,
@@ -115,17 +131,17 @@ class ExecutionPipeline:
         exec_limits = request.custom_limits or adapter.execution_spec.default_resource_limits
         if exec_limits.max_output_bytes > MAX_RUNNER_OUTPUT_BYTES:
             now = current_time_ms()
+            ev = MilestoneEvent(
+                Milestone.SANDBOX_ERROR,
+                now,
+                f"Requested max_output_bytes ({exec_limits.max_output_bytes}) exceeds runner cap ({MAX_RUNNER_OUTPUT_BYTES})",
+            )
+            emit(ev)
             return ExecutionResult(
                 request_id=request.request_id,
                 language_id=request.language_id,
                 final_status=Milestone.SANDBOX_ERROR,
-                milestones=[
-                    MilestoneEvent(
-                        Milestone.SANDBOX_ERROR,
-                        now,
-                        f"Requested max_output_bytes ({exec_limits.max_output_bytes}) exceeds runner cap ({MAX_RUNNER_OUTPUT_BYTES})",
-                    )
-                ],
+                milestones=list(milestones),
                 exit_code=1,
                 signal=0,
                 wall_ms=0,
@@ -135,13 +151,12 @@ class ExecutionPipeline:
                 stderr=f"Requested max_output_bytes ({exec_limits.max_output_bytes}) exceeds runner cap ({MAX_RUNNER_OUTPUT_BYTES} bytes)",
             )
 
-        milestones: List[MilestoneEvent] = []
         workspace = tempfile.mkdtemp(prefix="pes2-work-")
         os.chmod(workspace, 0o700)
 
         try:
             # Milestone: ACCEPTED
-            milestones.append(MilestoneEvent(Milestone.ACCEPTED, current_time_ms(), "Request accepted and workspace provisioned"))
+            emit(MilestoneEvent(Milestone.ACCEPTED, current_time_ms(), "Request accepted and workspace provisioned"))
 
             # Determine source filename and artifact path
             if adapter.compile_spec:
@@ -165,7 +180,7 @@ class ExecutionPipeline:
                 if artifact_path and artifact_rel != source_rel and os.path.exists(artifact_path):
                     os.remove(artifact_path)
 
-                milestones.append(MilestoneEvent(Milestone.COMPILING, current_time_ms(), "Compilation initiated"))
+                emit(MilestoneEvent(Milestone.COMPILING, current_time_ms(), "Compilation initiated"))
 
                 compile_res = self.runner.run(
                     workspace=workspace,
@@ -207,14 +222,14 @@ class ExecutionPipeline:
                         except OSError:
                             pass
 
-                    milestones.append(
+                    emit(
                         MilestoneEvent(compile_milestone, current_time_ms(), f"Compilation stopped: {compile_milestone.value}")
                     )
                     return ExecutionResult(
                         request_id=request.request_id,
                         language_id=request.language_id,
                         final_status=compile_milestone,
-                        milestones=milestones,
+                        milestones=list(milestones),
                         exit_code=compile_res.exit_code if compile_res.exit_code != 0 else 1,
                         signal=compile_res.signal,
                         wall_ms=compile_res.wall_ms,
@@ -227,7 +242,7 @@ class ExecutionPipeline:
 
             # Stage 2: Execute (C/C++ runtime binary or Python interpreter)
             # Interpreted languages emit RUNNING directly after ACCEPTED without synthetic COMPILING
-            milestones.append(MilestoneEvent(Milestone.RUNNING, current_time_ms(), "Target execution started"))
+            emit(MilestoneEvent(Milestone.RUNNING, current_time_ms(), "Target execution started"))
 
             exec_res = self.runner.run(
                 workspace=workspace,
@@ -254,7 +269,7 @@ class ExecutionPipeline:
                     remaining = exec_limits.max_output_bytes - len(raw_stdout)
                     stderr = stderr.encode("utf-8")[:remaining].decode("utf-8", errors="replace")
 
-            milestones.append(MilestoneEvent(final_status, current_time_ms(), f"Execution completed with {final_status.value}"))
+            emit(MilestoneEvent(final_status, current_time_ms(), f"Execution completed with {final_status.value}"))
 
             return ExecutionResult(
                 request_id=request.request_id,
