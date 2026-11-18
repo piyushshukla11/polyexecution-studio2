@@ -730,3 +730,32 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0035.
 - Status: Test process lifecycle hygiene resolved; Phase 2 ready for merge review.
 - Tutor review: pending
+
+
+## [LOG-0037] 2026-11-18 11:47 IST | DECISION | actor: agent
+- Context: Reconciling Phase 3 Worker Daemon architecture, gRPC dependencies, and toolchain sequencing against `docs/04_BUILD_PLAN.md`.
+- Decision:
+  1. Worker Daemon Architecture: Adopt a Python `grpc.aio` worker daemon (`engine/daemon/`) rather than the older Kotlin/Rust wording in `docs/04_BUILD_PLAN.md`. This preserves architectural cohesion with the existing typed `RuntimeRegistry` and `ExecutionPipeline` without inter-process IPC bridges, process spawning overhead, or JVM startup latency.
+  2. Dependencies: Adopt `grpcio` (runtime) and `grpcio-tools` (proto compiler) to compile `proto/execution.proto` into typed Python async stubs.
+  3. Non-Blocking Async & Live Event Streaming: `ExecutionPipeline.execute()` and `NativeSandboxRunner.run()` are synchronous and must never block the asyncio event loop. Off-loop execution will run in a bounded thread pool executor (`asyncio.to_thread` / `concurrent.futures.ThreadPoolExecutor`), while an event callback/queue pushes `ExecutionMilestone` events to the gRPC client stream in real time as they occur (not batched after completion). Concurrency will be bounded, client cancellation will propagate `SIGTERM` to `pes2-runner` for clean cgroup cleanup, and workspace teardown will be enforced on every outcome.
+  4. Toolchain Sequencing: Start with the sandboxed Bash vertical slice first. `bash` is verified available at `/usr/bin/bash` (v5.2.21). Treat `bash -n` as syntax validation only, not a security boundary (containment relies on kernel namespaces, seccomp, and cgroups v2). Go and Rust are not yet installed on the host and will remain visibly uninstalled/unsupported in the registry until separately planned, authorized, and provisioned.
+- Impact: Resolves architectural mismatch; keeps Tier B pure Python; establishes truthful toolchain support reporting.
+
+
+## [LOG-0038] 2026-11-18 11:48 IST | PLAN | actor: agent
+- Goal: Implement the Bash runtime adapter vertical slice in `engine/` and add test coverage for syntax checks, execution, timeouts, memory bounds, and fail-closed isolation.
+- Reason: Phase 3 begins with the verified host runtime (Bash 5.2.21). Bash requires an isolated single-stage adapter with a pre-flight syntax check (`bash -n`), non-interactive invocation (`bash --norc --noprofile`), bounded memory/process limits to constrain subshell forks, and full integration with the existing `ExecutionPipeline` and CLI.
+- Steps:
+  1. In `engine/registry.py`:
+     - Register `bash` in `RuntimeRegistry` with `installed_version` detected via `bash --version`.
+     - Configure `ExecutionSpec` to run `/usr/bin/bash` with `--norc`, `--noprofile`, `/workspace/solution.sh`.
+     - Configure `CompileSpec` with `compiler_bin="/usr/bin/bash"`, `compile_args=["-n", "/workspace/solution.sh"]` to validate syntax during the compile stage and emit truthful `COMPILE_ERROR` before execution.
+  2. In `engine/pipeline.py`:
+     - Support single-file syntax check compile specs where the output artifact is the source script itself (or artifact verification confirms source is unchanged and valid).
+  3. In `tests/test_registry.py` and `tests/test_pipeline.py`:
+     - Add unit tests verifying `bash` adapter contract, successful execution, syntax error failure, runtime nonzero exit, timeout handling, and workspace cleanup.
+  4. Run Python unit test suite, sandbox unit checks, and verify append-only hooks.
+- Files: PROGRESS.md, engine/registry.py, engine/pipeline.py, tests/test_registry.py, tests/test_pipeline.py.
+- Linked: LOG-0037.
+- Expected: All unit tests pass; Bash adapter adheres to typed registry contract; uninstalled runtimes remain marked unsupported.
+- Tutor review: pending
