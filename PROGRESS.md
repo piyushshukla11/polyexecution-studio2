@@ -298,3 +298,435 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0016.
 - Status: Phase 1 sandbox runtime verification complete. Ready for tutor review; branch kept unmerged on `phase/1-sandbox-engine`.
 - Tutor review: pending
+
+
+## [LOG-0018] 2026-11-17 20:27 IST | PLAN | actor: agent
+- Goal: Implement Phase 2 typed RuntimeAdapter and RuntimeRegistry engine with truthful milestones, isolated compilation and execution pipelines for C, C++, and Python 3, and stale artifact prevention.
+- Reason: docs/04_BUILD_PLAN.md Phase 2 requires typed adapters, Stage 1 compile and Stage 2 execute pipelines for C/C++, single-stage pipeline for Python 3, truthful milestone events, explicit executable paths/argv vectors, and verified cleanup.
+- Steps:
+  1. Add Python bytecode patterns (__pycache__/, *.pyc) to .gitignore to avoid unstaged junk.
+  2. Implement engine/models.py defining LanguageId, RuntimeFamily, Milestone, ResourceLimits, CompileSpec, ExecutionSpec, SeccompPolicyProfile, CleanupSpec, ExecutionRequest, MilestoneEvent, and ExecutionResult.
+  3. Implement engine/registry.py defining RuntimeRegistry with Tier 1 adapters for C (gcc), C++ (clang++), and Python 3 (python3) using explicit absolute executable paths and immutable argv vectors.
+  4. Implement engine/runner.py defining RunnerInterface with NativeSandboxRunner (calling sandbox/pes2-runner) and MockSandboxRunner for hermetic unit testing.
+  5. Implement engine/pipeline.py defining ExecutionPipeline enforcing ephemeral workspace isolation, truthful milestone sequences (ACCEPTED -> COMPILING -> RUNNING -> COMPLETED or COMPILE_ERROR for C/C++; ACCEPTED -> RUNNING -> COMPLETED for Python 3), guaranteed cleanup, and stale artifact defense.
+  6. Implement automated unit tests in tests/test_registry.py and tests/test_pipeline.py covering registration, explicit arguments, truthful milestones, compile failure isolation, stale artifact defense, and workspace cleanup.
+  7. Run test suites, append-only verification, repo hygiene checks, and git diff checks.
+- Files: .gitignore, PROGRESS.md, engine/__init__.py, engine/models.py, engine/registry.py, engine/runner.py, engine/pipeline.py, tests/__init__.py, tests/test_registry.py, tests/test_pipeline.py.
+- Linked: LOG-0017.
+- Expected: All unit tests pass cleanly; milestones are emitted truthfully without synthetic COMPILING for Python 3; compilers and runners use explicit paths; zero orphaned files or leaked processes; hygiene checks pass.
+- Tutor review: pending
+
+
+## [LOG-0019] 2026-11-17 20:55 IST | DONE | actor: agent
+- Goal: Implement Phase 2 typed RuntimeAdapter and RuntimeRegistry engine with truthful milestones, isolated compilation and execution pipelines for C, C++, and Python 3, and stale artifact prevention.
+- Outcome:
+  1. Updated `.gitignore` to ignore Python bytecode artifacts (`__pycache__/`, `*.pyc`, `.pytest_cache/`).
+  2. Implemented `engine/models.py` with strongly typed enum and dataclass representations for `LanguageId`, `RuntimeFamily`, `Milestone`, `ResourceLimits`, `CompileSpec`, `ExecutionSpec`, `SeccompPolicyProfile`, `CleanupSpec`, `ExecutionRequest`, `MilestoneEvent`, `RunnerResult`, and `ExecutionResult`.
+  3. Implemented `engine/registry.py` registering Tier 1 runtime adapters:
+     - C (`LanguageId.C`): `gcc 14` official, `/usr/bin/gcc` installed, 2-stage compile (`-O2`, `-std=gnu11`, `-Wall`, `-Wextra`, `-Werror`) to `/workspace/a.out` and bounded execution with `STRICT_NATIVE` seccomp.
+     - C++ (`LanguageId.CPP`): `clang 19` official, `/usr/bin/clang++` (or `/usr/bin/g++`) installed, 2-stage compile (`-O2`, `-std=c++20`, `-Wall`, `-Wextra`, `-Werror`) to `/workspace/a.out` and bounded execution.
+     - Python 3 (`LanguageId.PYTHON3`): `Python 3.14` official, `/usr/bin/python3` installed, single-stage interpreted execution (`compile_spec=None`) with `/usr/bin/python3 /workspace/solution.py`.
+  4. Implemented `engine/runner.py` with `RunnerInterface`, `NativeSandboxRunner` (parsing `pes2-runner` output and exit statuses), and `MockSandboxRunner` for hermetic testing.
+  5. Implemented `engine/pipeline.py` enforcing:
+     - Ephemeral workspace isolation (`/tmp/pes2-work-XXXXXX` mode `0700`) with guaranteed cleanup on all exit paths.
+     - Truthful milestone sequence for compiled runtimes: `ACCEPTED -> COMPILING -> RUNNING -> COMPLETED` (or `COMPILE_ERROR`).
+     - Truthful milestone sequence for interpreted runtimes: `ACCEPTED -> RUNNING -> COMPLETED` without synthetic `COMPILING`.
+     - Compile failure isolation: terminates immediately upon compile failure; `RUNNING` is never emitted.
+     - Stale artifact defense: removes pre-existing or planted artifacts before compile and upon compile failure to ensure broken builds never execute stale binaries.
+  6. Added top-level `Makefile` with `test`, `test-engine`, `check`, and `clean` targets.
+  7. Implemented unit test suite in `tests/test_registry.py` (5 tests), `tests/test_pipeline.py` (9 tests), and `tests/test_runner.py` (3 tests) covering adapter contracts, explicit argv vectors, truthful milestones, stale artifact defense, and workspace cleanup.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 17/17 tests passed in 0.652s.
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED with clear warning notice as expected inside container subshell.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `.gitignore`, `Makefile`, `PROGRESS.md`, `engine/__init__.py`, `engine/models.py`, `engine/pipeline.py`, `engine/registry.py`, `engine/runner.py`, `tests/__init__.py`, `tests/test_pipeline.py`, `tests/test_registry.py`, `tests/test_runner.py`.
+- Linked: LOG-0018.
+- Status: Phase 2 vertical slice engine implemented on branch `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Tier A sandbox C code untouched.
+- Tutor review: pending
+
+
+## [LOG-0020] 2026-11-17 21:08 IST | PLAN | actor: agent
+- Goal: Fix Tier B pipeline correctness gaps: missing artifact check upon compiler zero exit, max_output_bytes enforcement/rejection against runner 64 KiB cap, and pre-write source size bounding.
+- Reason: Tutor review identified: (1) if compilation exits 0 but produces no artifact, the pipeline improperly continued to execution; (2) custom max_output_bytes was ignored by the runner interface without software cap or validation; (3) unconstrained source code could consume host temporary storage. Tier A sandbox C code must not be modified.
+- Steps:
+  1. Define MAX_SOURCE_BYTES (65536) and MAX_RUNNER_OUTPUT_BYTES (65536) in engine/models.py.
+  2. In engine/pipeline.py:
+     - Check UTF-8 byte length of request.source_code against MAX_SOURCE_BYTES before provisioning or writing to host workspace; reject oversized inputs with SANDBOX_ERROR.
+     - Validate requested max_output_bytes: if custom limit exceeds MAX_RUNNER_OUTPUT_BYTES, reject early with clear error describing the runner cap.
+     - In Stage 1 compilation, verify the expected artifact file exists on disk even if compiler returned exit 0; if missing, fail closed as COMPILE_ERROR and ensure Stage 2 execution is never started.
+     - In Stage 2 execution, enforce the requested max_output_bytes if less than runner 64 KiB cap by truncating stdout/stderr and marking OUTPUT_LIMIT when output length exceeds limit.
+  3. Update tests/test_pipeline.py:
+     - Update C success mock to simulate artifact generation.
+     - Add regression test for zero-exit compile with missing artifact (asserts COMPILE_ERROR and zero RUNNING emissions).
+     - Add regression test for custom max_output_bytes enforcement (truncation and OUTPUT_LIMIT milestone) and rejection of limits > 65536 bytes.
+     - Add regression test for oversized source code rejection before workspace write.
+  4. Run unit tests, append-only verification, repo hygiene checks, and git diff checks.
+- Files: PROGRESS.md, engine/models.py, engine/pipeline.py, tests/test_pipeline.py.
+- Linked: LOG-0019.
+- Expected: All unit tests pass; missing artifact results in COMPILE_ERROR; max_output_bytes strictly honored or rejected; oversized source rejected before disk write; zero Tier A files modified; Phase 1 tutor review remains pending.
+- Tutor review: pending
+
+
+## [LOG-0021] 2026-11-17 21:29 IST | DONE | actor: agent
+- Goal: Fix Tier B pipeline correctness gaps: missing artifact check upon compiler zero exit, max_output_bytes enforcement/rejection against runner 64 KiB cap, and pre-write source size bounding.
+- Outcome:
+  1. Defined `MAX_SOURCE_BYTES = 65536` (64 KiB) and `MAX_RUNNER_OUTPUT_BYTES = 65536` (64 KiB) in `engine/models.py`.
+  2. In `engine/pipeline.py`:
+     - Added pre-workspace validation: UTF-8 source byte length is checked against `MAX_SOURCE_BYTES` before creating any temporary workspace on the host; oversized inputs are rejected immediately with `SANDBOX_ERROR`.
+     - Added output limit validation: if custom `max_output_bytes` exceeds `MAX_RUNNER_OUTPUT_BYTES` (64 KiB runner pipe cap), the request is rejected with `SANDBOX_ERROR` and a clear explanatory message.
+     - Enhanced Stage 1 compilation verification: if the compiler exits with 0 and `OK` status but fails to produce the expected artifact binary, the pipeline immediately fails closed with `COMPILE_ERROR`, purging any partial state and guaranteeing Stage 2 execution (`RUNNING`) never starts.
+     - Implemented software output bounding in Stage 2 execution: if total stdout/stderr exceeds a requested `max_output_bytes` (<= 64 KiB), output is truncated to the requested cap and the final milestone is mapped to `OUTPUT_LIMIT`.
+  3. In `tests/test_pipeline.py`:
+     - Added `test_c_compile_success_without_artifact_fails_closed` proving zero-exit compile without artifact fails as `COMPILE_ERROR` and never emits `RUNNING`.
+     - Added `test_oversized_source_rejected_before_workspace` verifying oversized source rejection without creating temporary directories.
+     - Added `test_unsupported_max_output_bytes_rejected` verifying rejection of limits exceeding runner capability.
+     - Added `test_custom_max_output_bytes_software_truncation` verifying software output bounding and `OUTPUT_LIMIT` milestone.
+     - Updated `test_c_success_milestones` with `ArtifactCreatingMockRunner` simulating realistic compiler artifact creation.
+  4. Preserved Tier A boundary: zero modifications made to `sandbox/src/seccomp.c`, `sandbox/src/runner.c`, or other Tier A files. Compilation through the live runner remains marked blocked pending Piyush's authorization of a compiler-specific seccomp profile.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 21/21 tests passed in 0.894s.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero errors.
+- Files: `PROGRESS.md`, `engine/models.py`, `engine/pipeline.py`, `tests/test_pipeline.py`.
+- Linked: LOG-0020.
+- Status: Tier B correctness gaps resolved on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
+- Tutor review: pending
+
+
+## [LOG-0022] 2026-11-17 22:01 IST | PLAN | actor: agent
+- Goal: Add CLI runner entrypoint (`engine/cli.py`) with structured JSON telemetry emission and automated CLI tests.
+- Reason: Provides an executable interface for invoking the Phase 2 runtime adapter pipeline from the shell, inspecting truthful milestone events, and testing requests end-to-end without requiring manual harness scripts.
+- Steps:
+  1. Implement `engine/cli.py` parsing `--language`, `--source-file`, `--source`, `--stdin`, `--wall-ms`, `--cpu-ms`, `--memory-kb`, `--pids`, and `--max-output-bytes`.
+  2. Emit execution results as structured JSON containing milestones, exit code, signal, kernel timings, memory, stdout, and stderr.
+  3. Implement `tests/test_cli.py` testing argument validation, JSON formatting, milestone serialization, and error exit codes.
+  4. Run test suites, append-only verification, repo hygiene checks, and git diff checks.
+- Files: PROGRESS.md, engine/cli.py, tests/test_cli.py.
+- Linked: LOG-0021.
+- Expected: CLI works seamlessly with both mock and native runners; structured JSON output conforms to architecture schema; all tests pass; hygiene rules preserved.
+- Tutor review: pending
+
+
+## [LOG-0023] 2026-11-17 22:08 IST | DONE | actor: agent
+- Goal: Add CLI runner entrypoint (`engine/cli.py`) with structured JSON telemetry emission and automated CLI tests.
+- Outcome:
+  1. Implemented `engine/cli.py` providing a CLI entrypoint for invoking the runtime adapter pipeline with explicit flags (`--language`, `--source`, `--source-file`, `--stdin`, `--wall-ms`, `--cpu-ms`, `--memory-kb`, `--pids`, `--max-output-bytes`, `--runner`, `--cgroup-root`).
+  2. Structured JSON output formats request metadata, truthful milestone sequences, exit codes, signals, kernel timings, memory usage, stdout, stderr, and compiler diagnostics.
+  3. Added `tests/test_cli.py` (5 tests) covering Python execution success, source-file input, invalid language rejection, missing source handling, and unsupported output cap rejection.
+  4. Preserved Tier A boundary: zero changes made to `sandbox/src/` or C runner files.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 26/26 tests passed in 1.046s.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `engine/cli.py`, `tests/test_cli.py`.
+- Linked: LOG-0022.
+- Status: CLI entrypoint implemented on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
+- Tutor review: pending
+
+
+## [LOG-0024] 2026-11-17 22:27 IST | PLAN | actor: agent
+- Goal: Harden Tier B CLI input handling: bounded source file/stdin reading (MAX_SOURCE_BYTES + 1), UTF-8 decoding validation, positive/runner-bounded resource limit validation, and adapter-default limit preservation.
+- Reason: Tutor review identified: (1) unbounded file/pipe reads risk host memory exhaustion before size checks; (2) unvalidated resource limits could pass invalid or negative values to runners; (3) overriding a single limit erroneously replaced all other limits with generic defaults instead of the adapter's tuned values.
+- Steps:
+  1. Define runner capability bounds in engine/models.py matching runner.h: RUNNER_MIN_TIMEOUT_MS (1), RUNNER_MAX_TIMEOUT_MS (60000), RUNNER_MIN_MEMORY_KB (16384), RUNNER_MAX_MEMORY_KB (1048576), RUNNER_MAX_PIDS (128).
+  2. In engine/cli.py:
+     - Implement bounded binary reading functions for --source-file and stdin reading at most MAX_SOURCE_BYTES + 1 bytes.
+     - Reject oversized file/stream inputs immediately with clear error without loading full inputs into memory.
+     - Handle invalid UTF-8 byte sequences and OS read errors with clear error messages and non-zero exit.
+     - Validate custom resource limits against runner bounds; reject negative, zero, or out-of-range values.
+     - When overriding resource limits, inherit unspecified limits from the target adapter's default_resource_limits rather than hardcoded generic values.
+  3. In tests/test_cli.py:
+     - Add tests for oversized source file rejection via bounded read.
+     - Add tests for oversized stdin stream rejection via bounded read.
+     - Add tests for invalid UTF-8 in file and stdin.
+     - Add tests for invalid limits (negative wall-ms, wall-ms > 60000, memory-kb < 16384, memory-kb > 1048576, pids <= 0, max-output-bytes <= 0).
+     - Add test for single-limit override verifying preservation of adapter defaults.
+  4. Run test suites, append-only verification, repo hygiene checks, and git diff checks.
+- Files: PROGRESS.md, engine/models.py, engine/cli.py, tests/test_cli.py.
+- Linked: LOG-0023.
+- Expected: All 31+ tests pass; memory-bounded input reads enforced; runner capabilities validated; adapter defaults preserved; Tier A files untouched.
+- Tutor review: pending
+
+
+## [LOG-0025] 2026-11-17 22:54 IST | DONE | actor: agent
+- Goal: Harden Tier B CLI input handling: bounded source file/stdin reading (MAX_SOURCE_BYTES + 1), UTF-8 decoding validation, positive/runner-bounded resource limit validation, and adapter-default limit preservation.
+- Outcome:
+  1. Defined runner capability constants in `engine/models.py`: `RUNNER_MIN_TIMEOUT_MS = 1`, `RUNNER_MAX_TIMEOUT_MS = 60000`, `RUNNER_MIN_MEMORY_KB = 16384` (16 MiB), `RUNNER_MAX_MEMORY_KB = 1048576` (1 GiB), `RUNNER_MIN_PIDS = 1`, `RUNNER_MAX_PIDS = 128`.
+  2. In `engine/cli.py`:
+     - Implemented `read_bounded_source_file` and `read_bounded_source_stream` reading at most `MAX_SOURCE_BYTES + 1` bytes in binary mode; rejects oversized source inputs immediately without buffering full files or streams into memory.
+     - Added UTF-8 decode error handling for file and standard input reads with clear diagnostic messages and exit code 1.
+     - Implemented `validate_resource_limits` checking custom resource limits against runner bounds (`wall_ms`, `cpu_ms`, `memory_kb`, `pids`, `max_output_bytes`); rejects negative, zero, or out-of-range limits safely.
+     - When custom limits are provided, unspecified limits now inherit from the target adapter's `default_resource_limits` (e.g. Python 3's 128 MiB memory limit and 2000 ms CPU ceiling) rather than substituting generic defaults.
+  3. In `tests/test_cli.py`:
+     - Added tests for oversized source file rejection via bounded read.
+     - Added tests for oversized stdin stream rejection via bounded read.
+     - Added tests for invalid UTF-8 byte sequences in file and stdin inputs.
+     - Added tests for invalid limits (`wall_ms`, `memory_kb`, `pids`, `max_output_bytes`).
+     - Added test verifying adapter-default preservation when overriding a single limit (`--wall-ms 4500` preserves Python 3's 128 MiB memory and 2000 ms CPU defaults).
+  4. Preserved Tier A boundary: zero changes made to `sandbox/src/` or C runner files.
+- Verification:
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 34/34 tests passed in 0.980s.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `engine/models.py`, `engine/cli.py`, `tests/test_cli.py`.
+- Linked: LOG-0024.
+- Status: Tier B CLI input validation and bounded reads completed on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
+- Tutor review: pending
+
+
+## [LOG-0026] 2026-11-17 23:23 IST | PLAN | actor: agent
+- Goal: Implement narrowly scoped seccomp profile selection across Tier A (native runner) and Tier B (models, pipeline, runner interface) and enforce truthful compile-stage status propagation.
+- Reason: Piyush explicitly authorized Tier A and Tier B changes. Real compiler execution inside pes2-runner requires wait4/waitid to reap compiler child processes without weakening the strict profile used for user binaries. Additionally, compile-stage sandbox outcomes (TIMEOUT, MEMORY_LIMIT, BLOCKED_BY_POLICY, SANDBOX_ERROR, CANCELLED) must retain their true status rather than being conflated as COMPILE_ERROR.
+- Steps:
+  1. In sandbox/include/runner.h:
+     - Define seccomp_profile_t enum: SECCOMP_PROFILE_STRICT (0), SECCOMP_PROFILE_COMPILER (1), SECCOMP_PROFILE_PYTHON (2).
+     - Add seccomp_profile to runner_config_t.
+     - Declare int seccomp_apply_profile(seccomp_profile_t profile).
+  2. In sandbox/src/seccomp.c:
+     - Implement seccomp_apply_profile() supporting:
+       * SECCOMP_PROFILE_STRICT: base allowlist, clone namespace mask, no wait4/waitid.
+       * SECCOMP_PROFILE_COMPILER: adds wait4, waitid, and pipe creation needed by gcc/clang sub-processes, while still blocking network, namespaces, kernel controls, and privilege escalation.
+       * SECCOMP_PROFILE_PYTHON: base allowlist with sched_getaffinity for multi-core awareness, while blocking network, namespaces, and dangerous operations.
+       * Return EINVAL on invalid profile.
+  3. In sandbox/src/runner.c:
+     - Add --seccomp-profile <strict|compiler|python> CLI parsing; reject invalid profile strings with SANDBOX_ERROR.
+     - Call seccomp_apply_profile() in child_main.
+  4. In engine/models.py, engine/runner.py, engine/pipeline.py, and engine/registry.py:
+     - Update SeccompPolicyProfile enum (STRICT = "strict", COMPILER = "compiler", PYTHON = "python").
+     - Pass seccomp_profile to RunnerInterface.run() and NativeSandboxRunner (adding --seccomp-profile argument).
+     - Wire COMPILER profile to Stage 1 compile, STRICT profile to Stage 2 C/C++ execution, and PYTHON profile to Python execution.
+     - Fix compile-stage status propagation: if compile status is RUNTIME_ERROR, emit COMPILE_ERROR; if status is TIMEOUT, MEMORY_LIMIT, BLOCKED_BY_POLICY, SANDBOX_ERROR, or CANCELLED, retain the exact status truthfully.
+  5. Add unit and regression tests in tests/ covering profile validation, CLI propagation, truthful status mapping, and fail-closed handling.
+  6. Rebuild sandbox, run sandbox test suite, run Python test suite, append-only verification, and repo hygiene checks.
+- Files: PROGRESS.md, sandbox/include/runner.h, sandbox/src/seccomp.c, sandbox/src/runner.c, engine/models.py, engine/runner.py, engine/pipeline.py, engine/registry.py, tests/test_pipeline.py, tests/test_runner.py.
+- Linked: LOG-0025.
+- Expected: Strict profile remains unchanged for user binaries; compiler profile safely permits subprocess compilation; truthful status mapping preserves sandbox outcomes; all tests pass; git hygiene rules preserved.
+- Tutor review: pending
+
+
+## [LOG-0027] 2026-11-18 07:38 IST | DONE | actor: agent
+- Goal: Implement narrowly scoped seccomp profile selection across Tier A (native runner) and Tier B (models, pipeline, runner interface) and enforce truthful compile-stage status propagation.
+- Outcome:
+  1. In `sandbox/include/runner.h`:
+     - Added `seccomp_profile_t` enum (`SECCOMP_PROFILE_STRICT = 0`, `SECCOMP_PROFILE_COMPILER = 1`, `SECCOMP_PROFILE_PYTHON = 2`).
+     - Added `seccomp_profile` field to `runner_config_t`.
+     - Declared `int seccomp_apply_profile(seccomp_profile_t profile)`.
+  2. In `sandbox/src/seccomp.c`:
+     - Implemented `seccomp_apply_profile()`:
+       * `SECCOMP_PROFILE_STRICT`: Preserves Phase 1 zero-trust baseline; blocks sockets/network, wait4, namespaces, ptrace.
+       * `SECCOMP_PROFILE_COMPILER`: Adds narrowly scoped permissions strictly required by build tools (wait4, waitid, pipe, unlink, unlinkat, rename, renameat, renameat2, chmod, fchmod, fchmodat, mkdir, mkdirat, sched_getaffinity). Still enforces PR_SET_NO_NEW_PRIVS, blocks network, and blocks namespaces.
+       * `SECCOMP_PROFILE_PYTHON`: Base strict allowlist plus `sched_getaffinity` for multi-core topology awareness.
+       * Validated input: returns `-1` with `EINVAL` on invalid profile.
+  3. In `sandbox/src/runner.c`:
+     - Added `--seccomp-profile <strict|compiler|python>` CLI parsing; rejects invalid profile strings with `STATUS_SANDBOX_ERROR`.
+     - Invokes `seccomp_apply_profile()` inside `child_main`.
+  4. In `engine/models.py`, `engine/registry.py`, `engine/runner.py`, and `engine/pipeline.py`:
+     - Updated `SeccompPolicyProfile` enum values.
+     - Wired `COMPILER` profile to C/C++ compilation, `STRICT_NATIVE` profile to C/C++ artifact execution, and `PYTHON` profile to Python 3 execution.
+     - Passed profile through `RunnerInterface.run()` and `NativeSandboxRunner` (`--seccomp-profile <name>`).
+     - Fixed compile-stage status propagation: `RUNTIME_ERROR` from compiler maps to `COMPILE_ERROR`; sandbox outcomes (`TIMEOUT`, `MEMORY_LIMIT`, `BLOCKED_BY_POLICY`, `SANDBOX_ERROR`, `CANCELLED`) truthfully retain their exact status.
+  5. In `tests/`:
+     - Added tests for seccomp CLI argument assembly, stage-specific profile selection, and truthful compile-stage status propagation (`TIMEOUT`, `MEMORY_LIMIT`, `BLOCKED_BY_POLICY`).
+     - Fixed mock runner signatures in `tests/test_pipeline.py`.
+- Verification:
+  - `make -C sandbox clean all`: passed cleanly with `-Wall -Wextra -Werror -O2`.
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 38/38 tests passed in 1.088s.
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED inside container subshell as expected.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `sandbox/include/runner.h`, `sandbox/src/seccomp.c`, `sandbox/src/runner.c`, `engine/models.py`, `engine/registry.py`, `engine/runner.py`, `engine/pipeline.py`, `tests/test_pipeline.py`, `tests/test_runner.py`.
+- Linked: LOG-0026.
+- Status: Tier A seccomp profile selection and Tier B status propagation implemented on `phase/2-runtime-adapters`. Live host execution requires unprivileged user namespaces and delegated cgroups. Phase 1 tutor review remains pending.
+- Tutor review: pending
+
+
+## [LOG-0028] 2026-11-18 07:55 IST | PLAN | actor: agent
+- Goal: Resolve the two sandbox review points: (1) align UID/GID identity model implementation, header documentation, and architectural claims; (2) make host_has_active_swap() fail closed when /proc/swaps cannot be opened or read.
+- Reason: Tutor review identified: (1) runner.c maps namespace UID/GID 0 to the host user UID/GID and executes target code as namespace UID/GID 0 with capabilities cleared (not UID 65534 nobody), requiring header documentation, comments, and security claims to agree on the single-mapping unprivileged user namespace model; (2) host_has_active_swap() returned 0 upon fopen failure, which could mistakenly treat an unreadable swap state as "no active swap" and fail open when memory.swap.max is absent.
+- Steps:
+  1. In sandbox/src/cgroup.c:
+     - Refactor host_has_active_swap() to accept int *has_swap and return int error code (-1 on fopen or read failure; 0 on success).
+     - In cgroup_init(), if memory.swap.max is not present and host_has_active_swap() returns an error, fail closed immediately (failed = 1). If swap is present, set errno = ENOTSUP and fail closed.
+  2. In sandbox/include/runner.h, sandbox/src/runner.c, and docs/01_ARCHITECTURE.md:
+     - Document the unprivileged single-mapping user namespace identity model: namespace UID/GID 0 maps to host getuid()/getgid() to enable private mount/chroot setup without host root; all capabilities are cleared via SYS_capset before target execution; PR_SET_DUMPABLE and PR_SET_NO_NEW_PRIVS are enforced; explain why unprivileged user namespaces do not map to arbitrary unmapped UIDs like 65534 without multi-user subuid ranges.
+  3. Rebuild sandbox, run sandbox unit tests, run Python unit tests, verify append-only hooks, and check repo hygiene.
+- Files: PROGRESS.md, sandbox/src/cgroup.c, sandbox/include/runner.h, sandbox/src/runner.c, docs/01_ARCHITECTURE.md.
+- Linked: LOG-0027.
+- Expected: host_has_active_swap() fails closed on read error; identity model documented truthfully across headers and architecture; all 38 tests pass.
+- Tutor review: pending
+
+
+## [LOG-0029] 2026-11-18 08:05 IST | DONE | actor: agent
+- Goal: Resolve the two sandbox review points: (1) align UID/GID identity model implementation, header documentation, and architectural claims; (2) make host_has_active_swap() fail closed when /proc/swaps cannot be opened or read.
+- Outcome:
+  1. In `sandbox/src/cgroup.c`:
+     - Refactored `host_has_active_swap(int *has_swap)` to return `int` error status. If `/proc/swaps` cannot be opened or read, it returns `-1`, prompting `cgroup_init` to fail closed immediately (`failed = 1`).
+     - If `/proc/swaps` is read and active swap devices exist while `memory.swap.max` is not supported, `cgroup_init` sets `errno = ENOTSUP` and fails closed.
+  2. In `sandbox/include/runner.h`, `sandbox/src/runner.c`, and `docs/01_ARCHITECTURE.md`:
+     - Explicitly documented the single-mapping unprivileged user namespace identity model: namespace UID/GID 0 maps to host `getuid()`/`getgid()` to allow initial mount/chroot setup without host root privileges.
+     - Documented capability stripping guarantee: before target execution, `SYS_capset` permanently drops all capabilities (`cap_data = {{0}}`), `PR_SET_DUMPABLE=0` is set, and `PR_SET_NO_NEW_PRIVS=1` is locked by seccomp.
+     - Clarified why unprivileged single-mapping user namespaces run target code as namespace UID/GID 0 with zero capabilities (mapping to invoking host user) rather than switching to unmapped UIDs like 65534.
+- Verification:
+  - `make -C sandbox clean all`: passed cleanly with `-Wall -Wextra -Werror -O2`.
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 38/38 tests passed in 1.098s.
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED inside container subshell as expected.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero errors.
+- Files: `PROGRESS.md`, `sandbox/src/cgroup.c`, `sandbox/include/runner.h`, `sandbox/src/runner.c`, `docs/01_ARCHITECTURE.md`.
+- Linked: LOG-0028.
+- Status: Both sandbox review points resolved on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending.
+- Tutor review: pending
+
+
+## [LOG-0030] 2026-11-18 08:32 IST | PLAN | actor: agent
+- Goal: Diagnose and resolve the GNU Assembler (`as`) `SIGSYS` ("Bad system call") crash during live C/C++ compilation under `SECCOMP_PROFILE_COMPILER`; add regression tests; capture genuine host runtime terminal output for build, unit suite, strict runtime suite, live C/C++/Python execution, and compile error handling; verify ephemeral workspace and cgroup cleanup.
+- Reason: When `gcc` compiles C source files, it invokes `as` (GNU Assembler), which calls `getrusage(RUSAGE_SELF, ...)` (syscall 98 on x86_64) to collect process resource metrics. Because `getrusage` was missing from `SECCOMP_PROFILE_COMPILER`, `as` was killed with `SIGSYS`. Adding `SCMP_SYS(getrusage)` narrowly to `SECCOMP_PROFILE_COMPILER` resolves the failure while preserving default-deny isolation, network blocking, and namespace restrictions.
+- Steps:
+  1. In `sandbox/src/seccomp.c`: Add `SCMP_SYS(getrusage)` to `compiler_allowed` within `SECCOMP_PROFILE_COMPILER`. Keep `SECCOMP_PROFILE_STRICT` and base rules default-deny without `getrusage`.
+  2. In `sandbox/tests/`: Add focused unit test `test_seccomp_unit.c` verifying that:
+     - `getrusage` is permitted under `SECCOMP_PROFILE_COMPILER` and blocked under `SECCOMP_PROFILE_STRICT`.
+     - `wait4` is permitted under `SECCOMP_PROFILE_COMPILER` and blocked under `SECCOMP_PROFILE_STRICT`.
+     - Network creation (`socket`) and namespace creation (`clone` with `CLONE_NEWUSER`) are blocked under both profiles.
+     Wire this test into `sandbox/Makefile` test target.
+  3. In `tests/test_runner.py`: Add unit test regression coverage for `compiler` profile runner invocations.
+  4. Build sandbox with `-Wall -Wextra -Werror -O2`. Run Python unit suite (38+ tests). Run strict sandbox runtime suite (10/10 tests).
+  5. Execute live runs via `python3 -m engine.cli`:
+     - C program compile-then-run (`#include <stdio.h>\nint main() { printf("live-c-pass\\n"); return 0; }`).
+     - C++ program compile-then-run (`#include <iostream>\nint main() { std::cout << "live-cpp-pass" << std::endl; return 0; }`).
+     - Python 3 program execution (`print("live-python-pass")`).
+     - C compile-error case (`syntax error here;`) confirming truthful `COMPILE_ERROR` status, nonzero exit, compiler diagnostics on stderr, and no execution.
+  6. Verify workspace cleanup and cgroup zero-leakage.
+- Files: PROGRESS.md, sandbox/src/seccomp.c, sandbox/Makefile, sandbox/tests/test_seccomp_unit.c, tests/test_runner.py.
+- Linked: LOG-0029.
+- Expected: All unit and runtime tests pass; live C, C++, and Python runs succeed; compile errors fail closed truthfully without leaking workspaces or cgroups.
+- Tutor review: pending
+
+
+## [LOG-0031] 2026-11-18 08:54 IST | DONE | actor: agent
+- Goal: Diagnose and resolve the GNU Assembler (`as`) `SIGSYS` crash during live C/C++ compilation under `SECCOMP_PROFILE_COMPILER`; add regression tests; capture genuine host runtime terminal output for build, unit suite, strict runtime suite, live C/C++/Python execution, and compile error handling; verify ephemeral workspace and cgroup cleanup.
+- Outcome:
+  1. Root cause diagnosis: When `gcc` invokes `as` (GNU Assembler), `as` issues `getrusage(RUSAGE_SELF, ...)` (syscall 98 on x86_64) to record resource usage. Because `getrusage` was missing from `SECCOMP_PROFILE_COMPILER`, `as` was killed by `SIGSYS`. Additionally, Python 3.14 initialization invoked direct `open` (syscall 2 on x86_64) alongside `openat`.
+  2. Narrow, evidence-based seccomp fixes in `sandbox/src/seccomp.c`:
+     - Added `SCMP_SYS(getrusage)` to `compiler_allowed` under `SECCOMP_PROFILE_COMPILER`.
+     - Added `SCMP_SYS(open)` to `python_allowed` under `SECCOMP_PROFILE_PYTHON`.
+     - Preserved strict default-deny policy: `SECCOMP_PROFILE_STRICT` for user binaries continues to deny `getrusage`, `open`, `wait4`, and network/namespace syscalls.
+  3. Regression coverage:
+     - Created `sandbox/tests/test_seccomp.c` (10/10 focused unit checks passing) verifying that `getrusage` and `wait4` are allowed under `COMPILER` but killed with `SIGSYS` under `STRICT`, `open` is allowed under `PYTHON`, and network (`socket`) and namespace (`CLONE_NEWUSER`, `unshare`) creation are killed with `SIGSYS` under all profiles.
+     - Added profile command assembly regression tests in `tests/test_runner.py` (39/39 Python unit tests passing).
+  4. Live host runtime verification:
+     - Full build cleanly passed with `-Wall -Wextra -Werror -O2`.
+     - Strict runtime sandbox suite (`PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime`) PASSED 10/10 against delegated cgroup `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice`.
+     - Live C adapter execution via CLI (`#include <stdio.h>\nint main() { printf("live-c-pass\\n"); return 0; }`): PASSED (`final_status: COMPLETED`, `stdout: "live-c-pass\n"`).
+     - Live C++ adapter execution via CLI (`#include <iostream>\nint main() { std::cout << "live-cpp-pass" << std::endl; return 0; }`): PASSED (`final_status: COMPLETED`, `stdout: "live-cpp-pass\n"`).
+     - Live Python 3 execution via CLI (`print("live-python-pass")`): PASSED (`final_status: COMPLETED`, `stdout: "live-python-pass\n"`).
+     - Live C compile error case via CLI (`int main() { syntax error here; }`): PASSED truthful milestone handling (`final_status: COMPILE_ERROR`, `exit_code: 1`, execution never started, compiler diagnostics returned).
+  5. Cleanup verified: Zero leftover cgroups and zero leftover ephemeral workspace directories in `/tmp`.
+- Files: `PROGRESS.md`, `sandbox/src/seccomp.c`, `sandbox/Makefile`, `sandbox/tests/test_seccomp.c`, `tests/test_runner.py`.
+- Linked: LOG-0030.
+- Status: Phase 2 runtime adapter slice (C, C++, Python 3) fully verified live with seccomp and delegated cgroup v2. Requesting Tutor review before any merge.
+- Tutor review: pending
+
+
+## [LOG-0032] 2026-11-18 09:05 IST | CORRECTION | actor: agent
+- Context: Briefing descriptions and progress log notes regarding process creation isolation in `SECCOMP_PROFILE_STRICT`.
+- Correction: Corrected the claim that `SECCOMP_PROFILE_STRICT` blocks process creation (`fork`, `clone`). As implemented in `sandbox/src/seccomp.c:96-112`, `fork()`, `vfork()`, and `clone()` (when namespace flags are absent) are explicitly allowed across all profiles to permit standard threading and non-namespace child processes. Task count containment is enforced by cgroups v2 (`pids.max`), not seccomp. What `SECCOMP_PROFILE_STRICT` denies is namespace creation (`CLONE_NEW*`), `clone3` (returns `ENOSYS`), and child process reaping (`wait4`/`waitid` are omitted).
+- Impact: Architectural documentation and test assertions now accurately reflect that process creation is permitted under strict seccomp, while namespace creation and process waiting are blocked.
+
+
+## [LOG-0033] 2026-11-18 09:06 IST | PLAN | actor: agent
+- Goal: (1) Fix `host_has_active_swap()` in `sandbox/src/cgroup.c` to check `ferror()` after the `fgets()` loop and check `fclose()` return status, guaranteeing that any read or stream failure fails closed; (2) Add regression tests in `sandbox/tests/test_seccomp.c` confirming that `fork()` without namespaces succeeds under `SECCOMP_PROFILE_STRICT`, while `wait4()` and `CLONE_NEWUSER` are blocked by `SIGSYS`.
+- Reason: Tutor review identified: (1) in `sandbox/src/cgroup.c:104`, if `fgets()` stops due to an I/O read error or `fclose()` fails, `ferror()` was not checked, allowing a read error to return 0 and fail open as "no swap"; (2) briefings and tests must truthfully demonstrate that `fork()` is permitted under `STRICT` while `wait4()` and namespace creation are blocked.
+- Steps:
+  1. In `sandbox/src/cgroup.c`:
+     - Refactor `host_has_active_swap()` to inspect `ferror(f)` and `fclose(f) != 0`. On error, set `errno` and return `-1` to fail closed.
+     - Check `fclose(sf) != 0` in the `memory.swap.max` read validation block.
+  2. In `sandbox/tests/test_seccomp.c`:
+     - Add action `action_strict_fork_permitted` asserting that `fork()` executes successfully without `SIGSYS` under `SECCOMP_PROFILE_STRICT`.
+     - Retain and document `action_strict_wait4` asserting that `wait4()` is killed by `SIGSYS` under `SECCOMP_PROFILE_STRICT`.
+     - Retain and document `action_compiler_clone_user_blocked` asserting namespace denial.
+  3. Rebuild sandbox, run all unit tests, discovery checks, Python suite, and runtime tests.
+  4. Append linked `DONE` entry `LOG-0034`.
+- Files: PROGRESS.md, sandbox/src/cgroup.c, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0031.
+- Expected: Swap inspection fails closed on any read or close error; seccomp unit tests truthfully verify allowed `fork()` and denied `wait4()`/`CLONE_NEWUSER`; all tests pass.
+- Tutor review: pending
+
+
+## [LOG-0034] 2026-11-18 09:17 IST | DONE | actor: agent
+- Goal: (1) Fix `host_has_active_swap()` in `sandbox/src/cgroup.c` to check `ferror()` after the `fgets()` loop and check `fclose()` return status, guaranteeing that any read or stream failure fails closed; (2) Add regression tests in `sandbox/tests/test_seccomp.c` confirming that `fork()` without namespaces succeeds under `SECCOMP_PROFILE_STRICT`, while `wait4()` and `CLONE_NEWUSER` are blocked by `SIGSYS`.
+- Outcome:
+  1. In `sandbox/src/cgroup.c`:
+     - Refactored `host_has_active_swap()` to inspect `ferror(f)` and verify `fclose(f) == 0`. If either indicates an error, it returns `-1` (setting `errno` to `EIO` if unset), causing `cgroup_init` to fail closed immediately.
+     - Updated the `memory.swap.max` verification block to check `fclose(sf) != 0` and fail closed.
+  2. In `sandbox/tests/test_seccomp.c`:
+     - Added test assertion for `fork()` under `SECCOMP_PROFILE_STRICT`: passed cleanly without `SIGSYS`, truthfully confirming that process/thread creation is permitted by seccomp (bounded by cgroups v2 `pids.max`).
+     - Added test assertion for `clone(CLONE_NEWUSER)` under `SECCOMP_PROFILE_STRICT`: passed, confirming namespace creation is killed by `SIGSYS`.
+     - Retained test assertion for `wait4()` under `SECCOMP_PROFILE_STRICT`: passed, confirming process reaping is killed by `SIGSYS`.
+     - Expanded focused seccomp profile unit checks from 10 to 12 (all 12/12 passed).
+  3. Verification:
+     - `make -C sandbox test`: passed cleanly (12/12 seccomp unit checks, 5/5 cgroup discovery checks).
+     - `PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime`: passed 10/10 strict runtime fixtures against delegated cgroup `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice`.
+     - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 39/39 tests passed in 1.122s.
+     - `bash scripts/test_append_only.sh`: 7/7 passed.
+     - `bash scripts/check_progress_append_only.sh`: passed.
+     - `bash scripts/check_repo_hygiene.sh`: passed.
+     - `git diff --check`: passed with zero whitespace or conflict markers.
+- Files: `PROGRESS.md`, `sandbox/src/cgroup.c`, `sandbox/tests/test_seccomp.c`.
+- Linked: LOG-0033.
+- Status: Swap check fail-closed hardening and process creation seccomp documentation/tests resolved on `phase/2-runtime-adapters`. Requesting Tutor review before any merge.
+- Tutor review: pending
+
+
+## [LOG-0035] 2026-11-18 09:40 IST | PLAN | actor: agent
+- Goal: Prevent child process / zombie leakage in `action_strict_fork_permitted()` by configuring automatic kernel child reaping (`SIGCHLD` set to `SIG_IGN` with `SA_NOCLDWAIT`) and synchronizing child exit via pipe; verify zero stray or zombie processes remain after running `make -C sandbox test-runtime`.
+- Reason: In `sandbox/tests/test_seccomp.c`, `action_strict_fork_permitted()` forks a child process to test that `fork()` is permitted under `SECCOMP_PROFILE_STRICT`. Because `SECCOMP_PROFILE_STRICT` omits `wait4()`, the parent could not wait on the child, creating a window for a short-lived zombie or orphan process. Setting `SIGCHLD` to `SIG_IGN` with `SA_NOCLDWAIT` prior to installing the seccomp profile instructs the kernel to automatically reap the child immediately upon exit, and pipe synchronization guarantees the child has terminated before the test parent exits.
+- Steps:
+  1. In `sandbox/tests/test_seccomp.c`:
+     - In `action_strict_fork_permitted()`:
+       - Set `SIGCHLD` handler to `SIG_IGN` with `SA_NOCLDWAIT` using `sigaction`.
+       - Open a pipe via `pipe2(pfd, O_CLOEXEC)`.
+       - In the child: write 1 byte to the pipe, close the write end, and `_exit(0)`.
+       - In the parent: read 1 byte from the pipe, close the read end, and `_exit(0)`.
+  2. Rebuild sandbox and run `make -C sandbox test`.
+  3. Run `PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime` under the delegated cgroup root.
+  4. Verify that zero stray processes or zombies remain via `ps`.
+  5. Run Python unit suite (39/39).
+  6. Append linked `DONE` entry `LOG-0036`.
+- Files: PROGRESS.md, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0034.
+- Expected: All seccomp unit tests and runtime isolation tests pass cleanly with zero lingering processes or zombies.
+- Tutor review: pending
+
+
+## [LOG-0036] 2026-11-18 09:49 IST | DONE | actor: agent
+- Goal: Prevent child process / zombie leakage in `action_strict_fork_permitted()` by configuring automatic kernel child reaping (`SIGCHLD` set to `SIG_IGN` with `SA_NOCLDWAIT`) and synchronizing child exit via pipe; verify zero stray or zombie processes remain after running `make -C sandbox test-runtime`.
+- Outcome:
+  1. In `sandbox/tests/test_seccomp.c`:
+     - Refactored `action_strict_fork_permitted()` to configure `SIGCHLD` with `SIG_IGN` and `SA_NOCLDWAIT` prior to loading `SECCOMP_PROFILE_STRICT`, ensuring the Linux kernel reaps any terminated child immediately without requiring `wait4()`.
+     - Added an isolated pipe synchronization handshake: child writes 1 byte on completion and exits; parent blocks on pipe read until the child finishes, ensuring the child process lifecycle terminates cleanly before the test function returns.
+  2. Verification:
+     - `make -C sandbox test`: passed cleanly (12/12 seccomp unit checks, 5/5 cgroup discovery checks).
+     - `PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime`: passed 10/10 strict runtime fixtures against delegated cgroup `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice`.
+     - Stray process check (`ps aux | grep -E "test_seccomp|pes2-runner|defunct" | grep -v grep`): confirmed zero stray, orphaned, or zombie processes.
+     - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 39/39 tests passed in 1.136s.
+     - `bash scripts/test_append_only.sh`: 7/7 passed.
+     - `bash scripts/check_progress_append_only.sh`: passed.
+     - `bash scripts/check_repo_hygiene.sh`: passed.
+     - `git diff --check`: clean.
+- Files: `PROGRESS.md`, `sandbox/tests/test_seccomp.c`.
+- Linked: LOG-0035.
+- Status: Test process lifecycle hygiene resolved; Phase 2 ready for merge review.
+- Tutor review: pending
