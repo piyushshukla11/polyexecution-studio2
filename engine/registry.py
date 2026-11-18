@@ -180,3 +180,82 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(python3_adapter)
+
+        # Tier 1/2 Bash Runtime (bash)
+        bash_bin = "/usr/bin/bash" if os.path.exists("/usr/bin/bash") else shutil.which("bash") or "/usr/bin/bash"
+        bash_adapter = RuntimeAdapter(
+            id=LanguageId.BASH,
+            display_name="Bash",
+            official_version="Bash 5.2",
+            installed_version=detect_tool_version(bash_bin),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=CompileSpec(
+                compiler_bin=bash_bin,
+                compile_args=["--norc", "--noprofile", "-n", "/workspace/solution.sh"],
+                source_filename="solution.sh",
+                artifact_output_name="solution.sh",
+                compile_resource_limits=ResourceLimits(
+                    cpu_ms=1000,
+                    wall_ms=2000,
+                    memory_kb=65536,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.BASH,
+            ),
+            execution_spec=ExecutionSpec(
+                runner_bin=bash_bin,
+                execution_args=["--norc", "--noprofile", "/workspace/solution.sh"],
+                source_filename="solution.sh",
+                default_resource_limits=ResourceLimits(
+                    cpu_ms=2000,
+                    wall_ms=5000,
+                    memory_kb=65536,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.BASH,
+            ),
+            seccomp_policy=SeccompPolicyProfile.BASH,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(bash_adapter)
+
+        # Uninstalled stubs for Go and Rust (truthfully reported)
+        go_bin = "/usr/bin/go"
+        go_adapter = RuntimeAdapter(
+            id=LanguageId.GO,
+            display_name="Go",
+            official_version="Go 1.23",
+            installed_version=detect_tool_version(go_bin),
+            family=RuntimeFamily.NATIVE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=go_bin,
+                execution_args=[],
+                source_filename="solution.go",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(go_adapter)
+
+        rust_bin = "/usr/bin/rustc"
+        rust_adapter = RuntimeAdapter(
+            id=LanguageId.RUST,
+            display_name="Rust",
+            official_version="Rust 1.82",
+            installed_version=detect_tool_version(rust_bin),
+            family=RuntimeFamily.NATIVE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=rust_bin,
+                execution_args=[],
+                source_filename="solution.rs",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(rust_adapter)

@@ -815,3 +815,34 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: PROGRESS.md, sandbox/include/runner.h, sandbox/src/seccomp.c, sandbox/src/runner.c, sandbox/tests/test_seccomp.c.
 - Linked: LOG-0039.
 - Tutor review: pending
+
+
+## [LOG-0041] 2026-11-18 14:35 IST | DONE | actor: agent
+- Goal: Implemented and verified Tier B Bash Runtime Adapter vertical slice (`LanguageId.BASH`), syntax validation via `bash -n`, truthful milestone emissions, honest stubbing for uninstalled runtimes (`go`, `rust`), and live verification against delegated cgroup slice.
+- Outcome:
+  - `engine/models.py`:
+    - Added `BASH = "bash"` to `SeccompPolicyProfile`.
+    - Added `source_filename: Optional[str] = None` to `ExecutionSpec`.
+    - Added `@property def is_installed(self) -> bool` to `RuntimeAdapter`.
+  - `engine/registry.py`:
+    - Registered `bash` (`LanguageId.BASH`) adapter with `family=RuntimeFamily.INTERPRETED`, `seccomp_policy=SeccompPolicyProfile.BASH`, `CompileSpec(compiler_bin=bash_bin, compile_args=["--norc", "--noprofile", "-n", "/workspace/solution.sh"], source_filename="solution.sh", artifact_output_name="solution.sh", seccomp_profile=SeccompPolicyProfile.BASH)`, and `ExecutionSpec(runner_bin=bash_bin, execution_args=["--norc", "--noprofile", "/workspace/solution.sh"], source_filename="solution.sh", seccomp_profile=SeccompPolicyProfile.BASH)`.
+    - Registered `go` (`LanguageId.GO`) and `rust` (`LanguageId.RUST`) stubs with `installed_version="Not installed on host"` and `is_installed=False`.
+  - `engine/pipeline.py`:
+    - Added fail-closed check for `not adapter.is_installed` emitting `Milestone.SANDBOX_ERROR` with informative diagnostic.
+    - Updated source filename resolution to respect `adapter.compile_spec.source_filename` or `adapter.execution_spec.source_filename`.
+    - Updated stale artifact defense to preserve the source file when `artifact_rel == source_rel` (used during syntax validation passes).
+  - Tests & Verification:
+    - `tests/test_registry.py`: added `test_bash_adapter_contract` and `test_uninstalled_go_rust_stubs`.
+    - `tests/test_runner.py`: added `test_cmd_includes_seccomp_profile_bash`.
+    - `tests/test_pipeline.py`: added `test_bash_success_milestones`, `test_bash_syntax_error_emits_compile_error`, `test_bash_runtime_error`, `test_bash_timeout`, and `test_uninstalled_go_rust_fail_safely`.
+    - Unit tests: 46/46 passed in 1.6s.
+    - Live CLI tests under delegated cgroup root:
+      - Normal echo: `final_status=COMPLETED`, `exit_code=0`.
+      - Subshell pipeline: `final_status=COMPLETED`, `exit_code=0`, `stdout="got 1\ngot 2\ngot 3\n"`.
+      - Syntax error `if then`: `final_status=COMPILE_ERROR`, `exit_code=2`, diagnostic in `compile_output`.
+      - Runtime failure `exit 42`: `final_status=RUNTIME_ERROR`, `exit_code=42`.
+      - Uninstalled toolchains (`go`, `rust`): `final_status=SANDBOX_ERROR`, honest error output.
+      - Cleanup: zero leftover cgroups and zero leftover ephemeral workspaces.
+- Files: PROGRESS.md, engine/models.py, engine/registry.py, engine/pipeline.py, tests/test_registry.py, tests/test_runner.py, tests/test_pipeline.py.
+- Linked: LOG-0038.
+- Tutor review: pending

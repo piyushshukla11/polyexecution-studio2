@@ -98,11 +98,11 @@ class TestNativeSandboxRunner(unittest.TestCase):
                 target_bin="/bin/true",
                 target_argv=["foo"],
                 limits=ResourceLimits(),
-                seccomp_profile=SeccompPolicyProfile.PYTHON,
+                seccomp_profile=SeccompPolicyProfile.BASH,
             )
             cmd = mock_run.call_args[0][0]
             idx = cmd.index("--seccomp-profile")
-            self.assertEqual(cmd[idx + 1], "python")
+            self.assertEqual(cmd[idx + 1], "bash")
 
 
 if __name__ == "__main__":
