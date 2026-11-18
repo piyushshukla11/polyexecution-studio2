@@ -65,15 +65,41 @@ static void action_compiler_getrusage(void) {
 }
 
 static void action_strict_fork_permitted(void) {
+    /*
+     * Prevent zombie/orphan leakage:
+     * 1. Setting SIGCHLD disposition to SIG_IGN with SA_NOCLDWAIT instructs
+     *    the kernel to automatically reap terminated children without waiting.
+     * 2. Synchronizing through a pipe ensures the child finishes before the
+     *    parent exits, guaranteeing zero lingering processes.
+     */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = SA_NOCLDWAIT;
+    if (sigaction(SIGCHLD, &sa, NULL) != 0) _exit(2);
+
+    int pfd[2];
+    if (pipe2(pfd, O_CLOEXEC) != 0) _exit(2);
+
     if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+
     /*
      * fork() is explicitly permitted under strict seccomp to allow standard
      * thread/process creation. Process quantity is bounded by cgroups v2 pids.max.
      */
     pid_t child = fork();
     if (child < 0) _exit(3);
-    if (child == 0) _exit(0);
-    /* Parent exits immediately without wait4() because wait4 is omitted from strict */
+    if (child == 0) {
+        close(pfd[0]);
+        char c = '1';
+        if (write(pfd[1], &c, 1) != 1) _exit(4);
+        close(pfd[1]);
+        _exit(0);
+    }
+    close(pfd[1]);
+    char buf = 0;
+    if (read(pfd[0], &buf, 1) != 1 || buf != '1') _exit(5);
+    close(pfd[0]);
     _exit(0);
 }
 
