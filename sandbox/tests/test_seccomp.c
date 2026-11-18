@@ -155,6 +155,61 @@ static void action_python_network_blocked(void) {
     socket(AF_INET, SOCK_STREAM, 0);
 }
 
+static void action_strict_getresuid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    uid_t r, e, s;
+    getresuid(&r, &e, &s);
+}
+
+static void action_strict_getresgid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    gid_t r, e, s;
+    getresgid(&r, &e, &s);
+}
+
+static void action_strict_getpgrp(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    getpgrp();
+}
+
+static void action_bash_getresuid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    uid_t r, e, s;
+    if (getresuid(&r, &e, &s) != 0) _exit(3);
+}
+
+static void action_bash_getresgid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    gid_t r, e, s;
+    if (getresgid(&r, &e, &s) != 0) _exit(3);
+}
+
+static void action_bash_getpgrp(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    if (getpgrp() < 0) _exit(3);
+}
+
+static void action_bash_wait4(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    int status = 0;
+    wait4(-1, &status, WNOHANG, NULL);
+}
+
+static void action_bash_network_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static void action_bash_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_bash_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_BASH) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
 int main(void) {
     printf("========================================================================\n");
     printf("Running Seccomp Profile Isolation & Permitted Syscall Unit Tests\n");
@@ -256,9 +311,89 @@ int main(void) {
         return 1;
     }
 
+    /* Test 13: getresuid blocked under strict profile */
+    if (expect_sigsys(action_strict_getresuid)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills getresuid with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted getresuid!\n");
+        return 1;
+    }
+
+    /* Test 14: getresgid blocked under strict profile */
+    if (expect_sigsys(action_strict_getresgid)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills getresgid with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted getresgid!\n");
+        return 1;
+    }
+
+    /* Test 15: getpgrp blocked under strict profile */
+    if (expect_sigsys(action_strict_getpgrp)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills getpgrp with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted getpgrp!\n");
+        return 1;
+    }
+
+    /* Test 16: getresuid permitted under bash profile */
+    if (expect_success(action_bash_getresuid)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH permits getresuid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH failed on getresuid!\n");
+        return 1;
+    }
+
+    /* Test 17: getresgid permitted under bash profile */
+    if (expect_success(action_bash_getresgid)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH permits getresgid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH failed on getresgid!\n");
+        return 1;
+    }
+
+    /* Test 18: getpgrp permitted under bash profile */
+    if (expect_success(action_bash_getpgrp)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH permits getpgrp without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH failed on getpgrp!\n");
+        return 1;
+    }
+
+    /* Test 19: wait4 permitted under bash profile */
+    if (expect_success(action_bash_wait4)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH permits wait4 without SIGSYS (for subshell pipelines)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH failed on wait4!\n");
+        return 1;
+    }
+
+    /* Test 20: network socket blocked under bash profile */
+    if (expect_sigsys(action_bash_network_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH kills socket() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH permitted socket creation!\n");
+        return 1;
+    }
+
+    /* Test 21: CLONE_NEWUSER blocked under bash profile */
+    if (expect_sigsys(action_bash_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 22: unshare blocked under bash profile */
+    if (expect_sigsys(action_bash_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_BASH kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_BASH permitted unshare()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 12 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 22 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }
