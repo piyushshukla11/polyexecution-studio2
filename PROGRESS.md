@@ -759,3 +759,59 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0037.
 - Expected: All unit tests pass; Bash adapter adheres to typed registry contract; uninstalled runtimes remain marked unsupported.
 - Tutor review: pending
+
+
+## [LOG-0039] 2026-11-18 12:16 IST | PLAN | actor: agent
+- Goal: Implement narrowly scoped `SECCOMP_PROFILE_BASH` in Tier A sandbox (`sandbox/src/seccomp.c`, `sandbox/include/runner.h`, `sandbox/src/runner.c`) to permit `getresuid`, `getresgid`, and `wait4` for Bash syntax checks and execution, while strictly preserving default-deny architecture, network denial, and namespace denial; add C unit tests in `sandbox/tests/test_seccomp.c`.
+- Reason: Piyush explicitly authorized adding `SECCOMP_PROFILE_BASH`. When `/usr/bin/bash` initializes, it queries `getresuid` (syscall 118) and `getresgid` (syscall 119) for identity inspection, and reaps subshells/child processes via `wait4` (syscall 61). Under `SECCOMP_PROFILE_STRICT`, these syscalls trigger `SIGSYS`. A dedicated profile `SECCOMP_PROFILE_BASH` provides the minimal required system calls for both `bash -n` syntax checks and script execution without weakening `STRICT`, `COMPILER`, or `PYTHON` profiles, and without granting network or namespace creation.
+- Steps:
+  1. In `sandbox/include/runner.h`:
+     - Add `SECCOMP_PROFILE_BASH = 3` to `seccomp_profile_t` enum.
+  2. In `sandbox/src/seccomp.c`:
+     - Handle `SECCOMP_PROFILE_BASH`: add `getresuid`, `getresgid`, and `wait4` to `bash_allowed`.
+     - Keep `SECCOMP_PROFILE_STRICT`, `SECCOMP_PROFILE_COMPILER`, and `SECCOMP_PROFILE_PYTHON` untouched.
+     - Enforce `SCMP_ACT_KILL_PROCESS` default action, namespace blocking (`CLONE_NEW*`), and `clone3` (`ENOSYS`).
+  3. In `sandbox/src/runner.c`:
+     - Update `--seccomp-profile` CLI parsing to accept `bash` and map to `SECCOMP_PROFILE_BASH`.
+     - Update usage message.
+  4. In `sandbox/tests/test_seccomp.c`:
+     - Add test actions for `SECCOMP_PROFILE_BASH`:
+       - `getresuid` permitted without `SIGSYS`.
+       - `getresgid` permitted without `SIGSYS`.
+       - `wait4` permitted without `SIGSYS`.
+       - `socket()` blocked with `SIGSYS` (network denial).
+       - `clone(CLONE_NEWUSER)` blocked with `SIGSYS` (namespace denial).
+       - `unshare()` blocked with `SIGSYS` (namespace denial).
+  5. Run `make -C sandbox test` and verify 100% pass on all seccomp unit tests.
+- Files: PROGRESS.md, sandbox/include/runner.h, sandbox/src/seccomp.c, sandbox/src/runner.c, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0038.
+- Expected: All seccomp unit checks pass (16+ checks); Bash profile strictly allows only required identity/process calls; network/namespaces remain completely denied.
+- Tutor review: pending
+
+
+## [LOG-0040] 2026-11-18 13:08 IST | DONE | actor: agent
+- Goal: Implemented and verified Tier A `SECCOMP_PROFILE_BASH` in `sandbox/include/runner.h`, `sandbox/src/seccomp.c`, and `sandbox/src/runner.c`, with unit regression tests in `sandbox/tests/test_seccomp.c` and runtime verification under delegated cgroup root.
+- Details:
+  - In `sandbox/include/runner.h`: Added `SECCOMP_PROFILE_BASH = 3` to `seccomp_profile_t`.
+  - In `sandbox/src/seccomp.c`:
+    - Added `bash_allowed` rules permitting `getresuid` (118), `getresgid` (119), `getpgrp` (111), and `wait4` (61).
+    - Preserved existing profiles (`STRICT`, `COMPILER`, `PYTHON`) completely unchanged.
+    - Preserved `SCMP_ACT_KILL_PROCESS` default deny, network denial (`socket()`), namespace denial (`CLONE_NEW*`, `unshare()`), and `clone3` fallback to `ENOSYS`.
+  - In `sandbox/src/runner.c`: Added `--seccomp-profile bash` CLI option parsing and updated usage string.
+  - In `sandbox/tests/test_seccomp.c`: Added 10 new assertion checks (total 22 seccomp unit checks):
+    - `getresuid`, `getresgid`, and `getpgrp` confirmed killed by `SIGSYS` under `STRICT` and permitted under `BASH`.
+    - `wait4` confirmed killed by `SIGSYS` under `STRICT` and permitted under `BASH`.
+    - `socket()`, `clone(CLONE_NEWUSER)`, and `unshare()` confirmed killed by `SIGSYS` under `BASH`.
+  - Verified test suites and live execution:
+    - `make -C sandbox test`: 22/22 seccomp unit checks PASSED, 5/5 cgroup discovery unit checks PASSED.
+    - `make -C sandbox test-runtime`: 10/10 runtime isolation fixtures PASSED against delegated cgroups.
+    - Live bash executions under `pes2-runner --seccomp-profile bash`:
+      - Basic echo: status=OK, exit=0, stdout='live-bash-under-seccomp'.
+      - Subshell pipeline `(for x in a b c; do echo $x; done) | while read item; do echo "item: $item"; done`: status=OK, exit=0.
+      - Syntax check `bash -n solution.sh`: status=OK, exit=0.
+      - Syntax error `if then`: status=RUNTIME_ERROR, exit=2, syntax error diagnostic captured.
+      - Subprocess execution: status=OK, exit=0.
+      - Cgroup clean-up: zero leftover cgroups in delegated slice.
+- Files: PROGRESS.md, sandbox/include/runner.h, sandbox/src/seccomp.c, sandbox/src/runner.c, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0039.
+- Tutor review: pending
