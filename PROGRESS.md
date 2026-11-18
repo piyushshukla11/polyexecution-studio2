@@ -908,3 +908,55 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: PROGRESS.md, proto/execution.proto, proto/execution_pb2.py, proto/execution_pb2_grpc.py, proto/__init__.py, engine/daemon/__init__.py, engine/daemon/proto/__init__.py, engine/daemon/service.py, engine/daemon/server.py, engine/pipeline.py, tests/test_daemon.py.
 - Linked: LOG-0042.
 - Tutor review: pending
+
+
+## [LOG-0044] 2026-11-18 16:03 IST | CORRECTION | actor: agent
+- Context: In LOG-0039, Piyush authorized adding SECCOMP_PROFILE_BASH to permit getresuid, getresgid, and wait4. During live verification on the host with Bash 5.2.21, `/usr/bin/bash` failed immediately on startup with SIGSYS because its job control initialization (`initialize_job_control()`) unconditionally queries `getpgrp` (syscall 111).
+- Correction: Record explicit authorization and justification for `getpgrp` in `SECCOMP_PROFILE_BASH`. `getpgrp` takes zero arguments, inspects only the caller's process group ID, is read-only, cannot affect namespaces, network, or external process state, and preserves default-deny containment. All 22 seccomp unit checks and runtime isolation tests continue to verify that network and namespace operations remain denied under SECCOMP_PROFILE_BASH.
+- Files: PROGRESS.md, sandbox/src/seccomp.c, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0039, LOG-0040.
+- Tutor review: pending
+
+
+## [LOG-0045] 2026-11-18 16:04 IST | PLAN | actor: agent
+- Goal: Address Phase 3 merge review feedback:
+  1. Process cancellation: Implement `cancel_token` threading event across `RunnerInterface`, `NativeSandboxRunner`, `ExecutionPipeline`, and `ExecutionWorkerServicer`. When cancelled, `NativeSandboxRunner` sends `SIGTERM` to `pes2-runner`, which triggers its cancellation handler, kills the target cgroup, and removes cgroup directories without leakage.
+  2. Admission control: Implement bounded request capacity (`max_capacity = max_workers + max_queue_size`) in `ExecutionWorkerServicer`; reject excess requests immediately with `grpc.StatusCode.RESOURCE_EXHAUSTED`.
+  3. Loopback-only binding: Enforce loopback binding in `engine/daemon/server.py` (`127.0.0.1`, `localhost`, `::1`), rejecting remote addresses until authentication/TLS is established.
+  4. Dependency manifest: Create `requirements.txt` recording reproducible dependency versions (`grpcio==1.85.3`, `grpcio-tools==1.85.3`, `protobuf==7.36.2`).
+  5. Test coverage: Add tests for process cancellation, admission rejection (`RESOURCE_EXHAUSTED`), and non-loopback host rejection.
+- Reason: The gRPC daemon must not leak runaway processes or cgroups when clients cancel streaming calls, must not accept unbounded queues that cause memory exhaustion under load, and must not expose insecure unauthenticated network endpoints.
+- Steps:
+  1. Create `requirements.txt` with pinned dependencies.
+  2. Update `engine/runner.py`: Add `cancel_token: Optional[threading.Event] = None` to `RunnerInterface.run` and `NativeSandboxRunner.run`. Use `subprocess.Popen` with background communicate reader, polling `cancel_token.is_set()` every 50ms. On cancel, send `SIGTERM` to `pes2-runner` and parse `STATUS_CANCELLED`.
+  3. Update `engine/pipeline.py`: Forward `cancel_token` to `self.runner.run()`.
+  4. Update `engine/daemon/service.py`: Add admission control checking `_active_count >= max_capacity`. Hook client cancellation callback (`context.add_callback`) to trigger `cancel_token.set()`.
+  5. Update `engine/daemon/server.py`: Enforce loopback-only host validation in `create_server` and `main`.
+  6. Update `tests/test_runner.py` and `tests/test_daemon.py`: Add unit/integration tests for cancellation propagation, admission exhaustion, and loopback enforcement.
+- Files: PROGRESS.md, requirements.txt, engine/runner.py, engine/pipeline.py, engine/daemon/service.py, engine/daemon/server.py, tests/test_runner.py, tests/test_daemon.py.
+- Linked: LOG-0042, LOG-0043.
+- Expected: All cancellation, admission control, and security tests pass; zero orphaned cgroups on client cancellation; clean test run across full suite.
+- Tutor review: pending
+
+
+## [LOG-0046] 2026-11-18 16:58 IST | DONE | actor: agent
+- Accomplished: Resolved all Phase 3 merge blockers recorded in LOG-0045:
+  1. Process cancellation:
+     - Extended `RunnerInterface.run` and `NativeSandboxRunner.run` with `cancel_token: Optional[threading.Event] = None`.
+     - Replaced blocking `subprocess.run` in `NativeSandboxRunner.run` with `subprocess.Popen` plus an asynchronous reader thread, polling `cancel_token.is_set()` on 50ms intervals.
+     - When cancelled, sends `SIGTERM` via `proc.terminate()` to `pes2-runner`. The C runner catches `SIGTERM`, invokes `kill_sandbox()`, tears down the sandbox cgroup, deletes temporary directories, and prints `PES2_RESULT status=CANCELLED exit=130 signal=15`.
+     - Threaded `cancel_token` through `ExecutionPipeline.execute` and hooked gRPC client stream termination via `context.add_done_callback` in `ExecutionWorkerServicer.ExecuteSync` and `ExecuteStream` to trigger `cancel_token.set()`.
+  2. Admission control:
+     - Added `max_capacity` (default 16) parameter to `ExecutionWorkerServicer`, `create_server`, and CLI flags (`--capacity`).
+     - Rejects excess requests when active and queued tasks reach capacity with `grpc.StatusCode.RESOURCE_EXHAUSTED`.
+  3. Loopback-only binding:
+     - Enforced `ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}` in `engine/daemon/server.py`. Rejects external addresses like `0.0.0.0` with `ValueError` (and exit code 2 in CLI) to prevent unauthenticated network exposure.
+  4. Dependency manifest:
+     - Created `requirements.txt` with pinned versions (`grpcio==1.85.3`, `grpcio-tools==1.85.3`, `protobuf==7.36.2`).
+  5. Test coverage & live verification:
+     - Added unit tests: `test_cancel_token_terminates_process` in `tests/test_runner.py`; `test_loopback_only_binding`, `test_admission_control_resource_exhausted`, and `test_stream_cancellation_propagation` in `tests/test_daemon.py`.
+     - Full test suite passed: 56/56 unit and integration tests passed cleanly in 2.8s.
+     - Ran live sandbox cancellation against real `pes2-runner` with `/usr/bin/sleep 10` under delegated cgroup root: runner returned `status: CANCELLED exit: 0 signal: 0 wall_ms: 316` with zero lingering processes and zero leftover cgroup directories.
+- Files: PROGRESS.md, requirements.txt, engine/runner.py, engine/pipeline.py, engine/daemon/service.py, engine/daemon/server.py, tests/test_runner.py, tests/test_daemon.py.
+- Linked: LOG-0044, LOG-0045.
+- Tutor review: pending

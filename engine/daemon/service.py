@@ -2,6 +2,7 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import threading
 from typing import AsyncIterator, Optional
 
 import grpc
@@ -98,11 +99,13 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         self,
         pipeline: ExecutionPipeline,
         max_workers: int = 8,
+        max_capacity: int = 16,
         executor: Optional[ThreadPoolExecutor] = None,
     ) -> None:
         self.pipeline = pipeline
         self.registry = pipeline.registry
         self.max_workers = max_workers
+        self.max_capacity = max_capacity
         self._executor = executor or ThreadPoolExecutor(max_workers=max_workers)
         self._active_workers = 0
         self._lock = asyncio.Lock()
@@ -112,17 +115,31 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         request: execution_pb2.ExecuteRequest,
         context: grpc.aio.ServicerContext,
     ) -> execution_pb2.ExecutionResult:
-        """Executes request synchronously off the asyncio event loop."""
+        """Executes request synchronously off the asyncio event loop with admission control and cancellation."""
         async with self._lock:
+            if self._active_workers >= self.max_capacity:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    f"Worker daemon capacity exceeded (active {self._active_workers} >= max {self.max_capacity}). Request rejected.",
+                )
             self._active_workers += 1
+
+        cancel_token = threading.Event()
+
+        def on_done(ctx) -> None:
+            cancel_token.set()
+
+        context.add_done_callback(on_done)
 
         try:
             domain_req = proto_to_execution_request(request)
             loop = asyncio.get_running_loop()
-            fut = self._executor.submit(self.pipeline.execute, domain_req)
+            fut = self._executor.submit(self.pipeline.execute, domain_req, None, cancel_token)
             result = await asyncio.wrap_future(fut)
             return execution_result_to_proto(result)
         except Exception as exc:
+            if context.code() == grpc.StatusCode.RESOURCE_EXHAUSTED:
+                raise
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(exc))
             return execution_pb2.ExecutionResult(
@@ -132,6 +149,7 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
                 stderr=f"Internal daemon execution error: {exc}",
             )
         finally:
+            cancel_token.set()
             async with self._lock:
                 self._active_workers -= 1
 
@@ -140,18 +158,31 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         request: execution_pb2.ExecuteRequest,
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[execution_pb2.ExecutionProgressEvent]:
-        """Streams live milestone events in real time followed by the final execution result."""
+        """Streams live milestone events in real time followed by the final execution result with cancellation support."""
         async with self._lock:
+            if self._active_workers >= self.max_capacity:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    f"Worker daemon capacity exceeded (active {self._active_workers} >= max {self.max_capacity}). Request rejected.",
+                )
             self._active_workers += 1
+
+        cancel_token = threading.Event()
+
+        def on_done(ctx) -> None:
+            cancel_token.set()
+
+        context.add_done_callback(on_done)
 
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
         def on_milestone(event: MilestoneEvent) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, ("milestone", event))
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(queue.put_nowait, ("milestone", event))
 
         def run_execution(req: ExecutionRequest) -> ExecutionResult:
-            return self.pipeline.execute(req, milestone_callback=on_milestone)
+            return self.pipeline.execute(req, milestone_callback=on_milestone, cancel_token=cancel_token)
 
         try:
             domain_req = proto_to_execution_request(request)
@@ -160,15 +191,18 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
             def on_done(f) -> None:
                 try:
                     res = f.result()
-                    loop.call_soon_threadsafe(queue.put_nowait, ("result", res))
+                    if not loop.is_closed():
+                        loop.call_soon_threadsafe(queue.put_nowait, ("result", res))
                 except Exception as err:
-                    loop.call_soon_threadsafe(queue.put_nowait, ("error", err))
+                    if not loop.is_closed():
+                        loop.call_soon_threadsafe(queue.put_nowait, ("error", err))
 
             fut.add_done_callback(on_done)
 
             while True:
                 # Check for client cancellation
-                if context.done():
+                if context.done() or cancel_token.is_set():
+                    cancel_token.set()
                     fut.cancel()
                     break
 
@@ -185,6 +219,7 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
                     context.set_details(str(payload))
                     break
         finally:
+            cancel_token.set()
             async with self._lock:
                 self._active_workers -= 1
 

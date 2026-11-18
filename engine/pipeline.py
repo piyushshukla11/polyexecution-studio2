@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+import threading
 import time
 from typing import Callable, List, Optional
 
@@ -50,6 +51,7 @@ class ExecutionPipeline:
         self,
         request: ExecutionRequest,
         milestone_callback: Optional[Callable[[MilestoneEvent], None]] = None,
+        cancel_token: Optional[threading.Event] = None,
     ) -> ExecutionResult:
         milestones: List[MilestoneEvent] = []
 
@@ -189,6 +191,7 @@ class ExecutionPipeline:
                     limits=adapter.compile_spec.compile_resource_limits,
                     stdin_content="",
                     seccomp_profile=adapter.compile_spec.seccomp_profile,
+                    cancel_token=cancel_token,
                 )
 
                 # Check if compilation failed
@@ -240,6 +243,24 @@ class ExecutionPipeline:
                         compile_output=compile_output,
                     )
 
+            # Check if cancelled before starting execution stage
+            if cancel_token and cancel_token.is_set():
+                emit(MilestoneEvent(Milestone.CANCELLED, current_time_ms(), "Execution cancelled by client"))
+                return ExecutionResult(
+                    request_id=request.request_id,
+                    language_id=request.language_id,
+                    final_status=Milestone.CANCELLED,
+                    milestones=list(milestones),
+                    exit_code=130,
+                    signal=15,
+                    wall_ms=0,
+                    cpu_ms=0,
+                    peak_memory_kb=0,
+                    stdout="",
+                    stderr="Execution cancelled by client",
+                    compile_output=compile_output,
+                )
+
             # Stage 2: Execute (C/C++ runtime binary or Python interpreter)
             # Interpreted languages emit RUNNING directly after ACCEPTED without synthetic COMPILING
             emit(MilestoneEvent(Milestone.RUNNING, current_time_ms(), "Target execution started"))
@@ -251,6 +272,7 @@ class ExecutionPipeline:
                 limits=exec_limits,
                 stdin_content=request.stdin,
                 seccomp_profile=adapter.execution_spec.seccomp_profile,
+                cancel_token=cancel_token,
             )
 
             stdout = exec_res.stdout

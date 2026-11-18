@@ -174,6 +174,71 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.final_status, execution_pb2.MILESTONE_SANDBOX_ERROR)
         self.assertIn("Toolchain for 'go' is not installed", resp.stderr)
 
+    def test_loopback_only_binding(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            create_server(host="0.0.0.0", port=0)
+        self.assertIn("Security violation", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx2:
+            create_server(host="192.168.1.1", port=0)
+        self.assertIn("Security violation", str(ctx2.exception))
+
+    async def test_admission_control_resource_exhausted(self) -> None:
+        slow_runner = DaemonMockRunner()
+        slow_runner.run_delay = 0.5
+        pipeline = ExecutionPipeline(registry=self.registry, runner=slow_runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=1, max_capacity=1, pipeline=pipeline)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            req1 = execution_pb2.ExecuteRequest(request_id="req-cap-1", language_id="python3", source_code="print(1)\n")
+            req2 = execution_pb2.ExecuteRequest(request_id="req-cap-2", language_id="python3", source_code="print(2)\n")
+
+            async def do_sync(req):
+                return await stub.ExecuteSync(req)
+
+            task1 = asyncio.create_task(do_sync(req1))
+            await asyncio.sleep(0.05)
+
+            with self.assertRaises(grpc.aio.AioRpcError) as ctx:
+                await stub.ExecuteSync(req2)
+            self.assertEqual(ctx.exception.code(), grpc.StatusCode.RESOURCE_EXHAUSTED)
+            self.assertIn("Worker daemon capacity exceeded", ctx.exception.details())
+
+            await task1
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
+    async def test_stream_cancellation_propagation(self) -> None:
+        slow_runner = DaemonMockRunner()
+        slow_runner.run_delay = 1.0
+        pipeline = ExecutionPipeline(registry=self.registry, runner=slow_runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=2, max_capacity=4, pipeline=pipeline)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            req = execution_pb2.ExecuteRequest(request_id="req-cancel-1", language_id="python3", source_code="import time; time.sleep(5)\n")
+            call = stub.ExecuteStream(req)
+            first_event = await call.read()
+            self.assertTrue(first_event.HasField("milestone_event"))
+            self.assertEqual(first_event.milestone_event.milestone, execution_pb2.MILESTONE_ACCEPTED)
+
+            call.cancel()
+
+            with self.assertRaises(asyncio.CancelledError):
+                while True:
+                    ev = await call.read()
+                    if ev is grpc.aio.EOF:
+                        raise asyncio.CancelledError()
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
