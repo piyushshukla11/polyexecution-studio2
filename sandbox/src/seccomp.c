@@ -60,6 +60,7 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
          * - wait4 / waitid: for reaping child compiler processes (cc1, as, ld, collect2)
          * - pipe / unlink / rename / chmod / mkdir: intermediate file management in /tmp and /workspace
          * - sched_getaffinity: CPU topology awareness
+         * - getrusage: process resource accounting used by assembler (GNU as)
          */
         const int compiler_allowed[] = {
             SCMP_SYS(wait4), SCMP_SYS(waitid),
@@ -67,7 +68,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
             SCMP_SYS(rename), SCMP_SYS(renameat), SCMP_SYS(renameat2),
             SCMP_SYS(chmod), SCMP_SYS(fchmod), SCMP_SYS(fchmodat),
             SCMP_SYS(mkdir), SCMP_SYS(mkdirat),
-            SCMP_SYS(sched_getaffinity)
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(getrusage)
         };
         for (size_t i = 0; i < sizeof(compiler_allowed) / sizeof(compiler_allowed[0]); ++i) {
             if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, compiler_allowed[i], 0) < 0) {
@@ -80,9 +82,11 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         /*
          * Interpreted scripting permissions:
          * - sched_getaffinity: os.cpu_count() multi-core affinity queries
+         * - open: direct open syscall invoked during Python 3 runtime initialization
          */
         const int python_allowed[] = {
-            SCMP_SYS(sched_getaffinity)
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(open)
         };
         for (size_t i = 0; i < sizeof(python_allowed) / sizeof(python_allowed[0]); ++i) {
             if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, python_allowed[i], 0) < 0) {

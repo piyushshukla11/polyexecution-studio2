@@ -589,3 +589,52 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0028.
 - Status: Both sandbox review points resolved on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending.
 - Tutor review: pending
+
+
+## [LOG-0030] 2026-11-18 08:32 IST | PLAN | actor: agent
+- Goal: Diagnose and resolve the GNU Assembler (`as`) `SIGSYS` ("Bad system call") crash during live C/C++ compilation under `SECCOMP_PROFILE_COMPILER`; add regression tests; capture genuine host runtime terminal output for build, unit suite, strict runtime suite, live C/C++/Python execution, and compile error handling; verify ephemeral workspace and cgroup cleanup.
+- Reason: When `gcc` compiles C source files, it invokes `as` (GNU Assembler), which calls `getrusage(RUSAGE_SELF, ...)` (syscall 98 on x86_64) to collect process resource metrics. Because `getrusage` was missing from `SECCOMP_PROFILE_COMPILER`, `as` was killed with `SIGSYS`. Adding `SCMP_SYS(getrusage)` narrowly to `SECCOMP_PROFILE_COMPILER` resolves the failure while preserving default-deny isolation, network blocking, and namespace restrictions.
+- Steps:
+  1. In `sandbox/src/seccomp.c`: Add `SCMP_SYS(getrusage)` to `compiler_allowed` within `SECCOMP_PROFILE_COMPILER`. Keep `SECCOMP_PROFILE_STRICT` and base rules default-deny without `getrusage`.
+  2. In `sandbox/tests/`: Add focused unit test `test_seccomp_unit.c` verifying that:
+     - `getrusage` is permitted under `SECCOMP_PROFILE_COMPILER` and blocked under `SECCOMP_PROFILE_STRICT`.
+     - `wait4` is permitted under `SECCOMP_PROFILE_COMPILER` and blocked under `SECCOMP_PROFILE_STRICT`.
+     - Network creation (`socket`) and namespace creation (`clone` with `CLONE_NEWUSER`) are blocked under both profiles.
+     Wire this test into `sandbox/Makefile` test target.
+  3. In `tests/test_runner.py`: Add unit test regression coverage for `compiler` profile runner invocations.
+  4. Build sandbox with `-Wall -Wextra -Werror -O2`. Run Python unit suite (38+ tests). Run strict sandbox runtime suite (10/10 tests).
+  5. Execute live runs via `python3 -m engine.cli`:
+     - C program compile-then-run (`#include <stdio.h>\nint main() { printf("live-c-pass\\n"); return 0; }`).
+     - C++ program compile-then-run (`#include <iostream>\nint main() { std::cout << "live-cpp-pass" << std::endl; return 0; }`).
+     - Python 3 program execution (`print("live-python-pass")`).
+     - C compile-error case (`syntax error here;`) confirming truthful `COMPILE_ERROR` status, nonzero exit, compiler diagnostics on stderr, and no execution.
+  6. Verify workspace cleanup and cgroup zero-leakage.
+- Files: PROGRESS.md, sandbox/src/seccomp.c, sandbox/Makefile, sandbox/tests/test_seccomp_unit.c, tests/test_runner.py.
+- Linked: LOG-0029.
+- Expected: All unit and runtime tests pass; live C, C++, and Python runs succeed; compile errors fail closed truthfully without leaking workspaces or cgroups.
+- Tutor review: pending
+
+
+## [LOG-0031] 2026-11-18 08:54 IST | DONE | actor: agent
+- Goal: Diagnose and resolve the GNU Assembler (`as`) `SIGSYS` crash during live C/C++ compilation under `SECCOMP_PROFILE_COMPILER`; add regression tests; capture genuine host runtime terminal output for build, unit suite, strict runtime suite, live C/C++/Python execution, and compile error handling; verify ephemeral workspace and cgroup cleanup.
+- Outcome:
+  1. Root cause diagnosis: When `gcc` invokes `as` (GNU Assembler), `as` issues `getrusage(RUSAGE_SELF, ...)` (syscall 98 on x86_64) to record resource usage. Because `getrusage` was missing from `SECCOMP_PROFILE_COMPILER`, `as` was killed by `SIGSYS`. Additionally, Python 3.14 initialization invoked direct `open` (syscall 2 on x86_64) alongside `openat`.
+  2. Narrow, evidence-based seccomp fixes in `sandbox/src/seccomp.c`:
+     - Added `SCMP_SYS(getrusage)` to `compiler_allowed` under `SECCOMP_PROFILE_COMPILER`.
+     - Added `SCMP_SYS(open)` to `python_allowed` under `SECCOMP_PROFILE_PYTHON`.
+     - Preserved strict default-deny policy: `SECCOMP_PROFILE_STRICT` for user binaries continues to deny `getrusage`, `open`, `wait4`, and network/namespace syscalls.
+  3. Regression coverage:
+     - Created `sandbox/tests/test_seccomp.c` (10/10 focused unit checks passing) verifying that `getrusage` and `wait4` are allowed under `COMPILER` but killed with `SIGSYS` under `STRICT`, `open` is allowed under `PYTHON`, and network (`socket`) and namespace (`CLONE_NEWUSER`, `unshare`) creation are killed with `SIGSYS` under all profiles.
+     - Added profile command assembly regression tests in `tests/test_runner.py` (39/39 Python unit tests passing).
+  4. Live host runtime verification:
+     - Full build cleanly passed with `-Wall -Wextra -Werror -O2`.
+     - Strict runtime sandbox suite (`PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime`) PASSED 10/10 against delegated cgroup `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice`.
+     - Live C adapter execution via CLI (`#include <stdio.h>\nint main() { printf("live-c-pass\\n"); return 0; }`): PASSED (`final_status: COMPLETED`, `stdout: "live-c-pass\n"`).
+     - Live C++ adapter execution via CLI (`#include <iostream>\nint main() { std::cout << "live-cpp-pass" << std::endl; return 0; }`): PASSED (`final_status: COMPLETED`, `stdout: "live-cpp-pass\n"`).
+     - Live Python 3 execution via CLI (`print("live-python-pass")`): PASSED (`final_status: COMPLETED`, `stdout: "live-python-pass\n"`).
+     - Live C compile error case via CLI (`int main() { syntax error here; }`): PASSED truthful milestone handling (`final_status: COMPILE_ERROR`, `exit_code: 1`, execution never started, compiler diagnostics returned).
+  5. Cleanup verified: Zero leftover cgroups and zero leftover ephemeral workspace directories in `/tmp`.
+- Files: `PROGRESS.md`, `sandbox/src/seccomp.c`, `sandbox/Makefile`, `sandbox/tests/test_seccomp.c`, `tests/test_runner.py`.
+- Linked: LOG-0030.
+- Status: Phase 2 runtime adapter slice (C, C++, Python 3) fully verified live with seccomp and delegated cgroup v2. Requesting Tutor review before any merge.
+- Tutor review: pending

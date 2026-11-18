@@ -46,7 +46,7 @@ class TestNativeSandboxRunner(unittest.TestCase):
         self.assertEqual(int(match.group(2)), 137)
         self.assertEqual(int(match.group(3)), 9)
 
-    def test_cmd_includes_seccomp_profile(self) -> None:
+    def test_cmd_includes_seccomp_profile_compiler(self) -> None:
         from unittest.mock import patch, MagicMock
         from engine.models import SeccompPolicyProfile
 
@@ -70,6 +70,39 @@ class TestNativeSandboxRunner(unittest.TestCase):
             self.assertIn("--seccomp-profile", cmd)
             idx = cmd.index("--seccomp-profile")
             self.assertEqual(cmd[idx + 1], "compiler")
+
+    def test_cmd_includes_seccomp_profile_strict_and_python(self) -> None:
+        from unittest.mock import patch, MagicMock
+        from engine.models import SeccompPolicyProfile
+
+        runner = NativeSandboxRunner(runner_path="/bin/true")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ""
+        mock_proc.stderr = "PES2_RESULT status=OK exit=0 signal=0 wall_ms=10 cpu_ms=5 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n"
+
+        with patch("subprocess.run", return_value=mock_proc) as mock_run:
+            runner.run(
+                workspace="/tmp",
+                target_bin="/bin/true",
+                target_argv=["foo"],
+                limits=ResourceLimits(),
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            )
+            cmd = mock_run.call_args[0][0]
+            idx = cmd.index("--seccomp-profile")
+            self.assertEqual(cmd[idx + 1], "strict")
+
+            runner.run(
+                workspace="/tmp",
+                target_bin="/bin/true",
+                target_argv=["foo"],
+                limits=ResourceLimits(),
+                seccomp_profile=SeccompPolicyProfile.PYTHON,
+            )
+            cmd = mock_run.call_args[0][0]
+            idx = cmd.index("--seccomp-profile")
+            self.assertEqual(cmd[idx + 1], "python")
 
 
 if __name__ == "__main__":
