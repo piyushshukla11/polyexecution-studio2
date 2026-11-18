@@ -21,6 +21,12 @@ typedef enum {
     STATUS_CANCELLED = 7
 } runner_status_t;
 
+typedef enum {
+    SECCOMP_PROFILE_STRICT = 0,
+    SECCOMP_PROFILE_COMPILER = 1,
+    SECCOMP_PROFILE_PYTHON = 2
+} seccomp_profile_t;
+
 typedef struct {
     const char *target_bin;
     char *const *target_argv;
@@ -31,6 +37,7 @@ typedef struct {
     uint32_t memory_limit_kb;    /* cgroup-charged memory, not virtual address space */
     uint32_t max_output_bytes;
     uint32_t max_pids;
+    seccomp_profile_t seccomp_profile;
     char cgroup_name[64];
 } runner_config_t;
 
@@ -59,6 +66,7 @@ int cgroup_peak_memory_kb(const char *root, const char *name, uint64_t *peak_kb)
 int cgroup_oom_kill_count(const char *root, const char *name, uint64_t *count);
 int cgroup_cpu_usage_ms(const char *root, const char *name, uint64_t *usage_ms);
 
+int seccomp_apply_profile(seccomp_profile_t profile);
 int seccomp_apply_strict_filter(void);
 
 #endif

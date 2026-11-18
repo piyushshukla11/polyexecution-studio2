@@ -481,3 +481,71 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0024.
 - Status: Tier B CLI input validation and bounded reads completed on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending. Real compiler execution blocked on Tier A seccomp `wait4` authorization.
 - Tutor review: pending
+
+
+## [LOG-0026] 2026-11-17 23:23 IST | PLAN | actor: agent
+- Goal: Implement narrowly scoped seccomp profile selection across Tier A (native runner) and Tier B (models, pipeline, runner interface) and enforce truthful compile-stage status propagation.
+- Reason: Piyush explicitly authorized Tier A and Tier B changes. Real compiler execution inside pes2-runner requires wait4/waitid to reap compiler child processes without weakening the strict profile used for user binaries. Additionally, compile-stage sandbox outcomes (TIMEOUT, MEMORY_LIMIT, BLOCKED_BY_POLICY, SANDBOX_ERROR, CANCELLED) must retain their true status rather than being conflated as COMPILE_ERROR.
+- Steps:
+  1. In sandbox/include/runner.h:
+     - Define seccomp_profile_t enum: SECCOMP_PROFILE_STRICT (0), SECCOMP_PROFILE_COMPILER (1), SECCOMP_PROFILE_PYTHON (2).
+     - Add seccomp_profile to runner_config_t.
+     - Declare int seccomp_apply_profile(seccomp_profile_t profile).
+  2. In sandbox/src/seccomp.c:
+     - Implement seccomp_apply_profile() supporting:
+       * SECCOMP_PROFILE_STRICT: base allowlist, clone namespace mask, no wait4/waitid.
+       * SECCOMP_PROFILE_COMPILER: adds wait4, waitid, and pipe creation needed by gcc/clang sub-processes, while still blocking network, namespaces, kernel controls, and privilege escalation.
+       * SECCOMP_PROFILE_PYTHON: base allowlist with sched_getaffinity for multi-core awareness, while blocking network, namespaces, and dangerous operations.
+       * Return EINVAL on invalid profile.
+  3. In sandbox/src/runner.c:
+     - Add --seccomp-profile <strict|compiler|python> CLI parsing; reject invalid profile strings with SANDBOX_ERROR.
+     - Call seccomp_apply_profile() in child_main.
+  4. In engine/models.py, engine/runner.py, engine/pipeline.py, and engine/registry.py:
+     - Update SeccompPolicyProfile enum (STRICT = "strict", COMPILER = "compiler", PYTHON = "python").
+     - Pass seccomp_profile to RunnerInterface.run() and NativeSandboxRunner (adding --seccomp-profile argument).
+     - Wire COMPILER profile to Stage 1 compile, STRICT profile to Stage 2 C/C++ execution, and PYTHON profile to Python execution.
+     - Fix compile-stage status propagation: if compile status is RUNTIME_ERROR, emit COMPILE_ERROR; if status is TIMEOUT, MEMORY_LIMIT, BLOCKED_BY_POLICY, SANDBOX_ERROR, or CANCELLED, retain the exact status truthfully.
+  5. Add unit and regression tests in tests/ covering profile validation, CLI propagation, truthful status mapping, and fail-closed handling.
+  6. Rebuild sandbox, run sandbox test suite, run Python test suite, append-only verification, and repo hygiene checks.
+- Files: PROGRESS.md, sandbox/include/runner.h, sandbox/src/seccomp.c, sandbox/src/runner.c, engine/models.py, engine/runner.py, engine/pipeline.py, engine/registry.py, tests/test_pipeline.py, tests/test_runner.py.
+- Linked: LOG-0025.
+- Expected: Strict profile remains unchanged for user binaries; compiler profile safely permits subprocess compilation; truthful status mapping preserves sandbox outcomes; all tests pass; git hygiene rules preserved.
+- Tutor review: pending
+
+
+## [LOG-0027] 2026-11-18 07:38 IST | DONE | actor: agent
+- Goal: Implement narrowly scoped seccomp profile selection across Tier A (native runner) and Tier B (models, pipeline, runner interface) and enforce truthful compile-stage status propagation.
+- Outcome:
+  1. In `sandbox/include/runner.h`:
+     - Added `seccomp_profile_t` enum (`SECCOMP_PROFILE_STRICT = 0`, `SECCOMP_PROFILE_COMPILER = 1`, `SECCOMP_PROFILE_PYTHON = 2`).
+     - Added `seccomp_profile` field to `runner_config_t`.
+     - Declared `int seccomp_apply_profile(seccomp_profile_t profile)`.
+  2. In `sandbox/src/seccomp.c`:
+     - Implemented `seccomp_apply_profile()`:
+       * `SECCOMP_PROFILE_STRICT`: Preserves Phase 1 zero-trust baseline; blocks sockets/network, wait4, namespaces, ptrace.
+       * `SECCOMP_PROFILE_COMPILER`: Adds narrowly scoped permissions strictly required by build tools (wait4, waitid, pipe, unlink, unlinkat, rename, renameat, renameat2, chmod, fchmod, fchmodat, mkdir, mkdirat, sched_getaffinity). Still enforces PR_SET_NO_NEW_PRIVS, blocks network, and blocks namespaces.
+       * `SECCOMP_PROFILE_PYTHON`: Base strict allowlist plus `sched_getaffinity` for multi-core topology awareness.
+       * Validated input: returns `-1` with `EINVAL` on invalid profile.
+  3. In `sandbox/src/runner.c`:
+     - Added `--seccomp-profile <strict|compiler|python>` CLI parsing; rejects invalid profile strings with `STATUS_SANDBOX_ERROR`.
+     - Invokes `seccomp_apply_profile()` inside `child_main`.
+  4. In `engine/models.py`, `engine/registry.py`, `engine/runner.py`, and `engine/pipeline.py`:
+     - Updated `SeccompPolicyProfile` enum values.
+     - Wired `COMPILER` profile to C/C++ compilation, `STRICT_NATIVE` profile to C/C++ artifact execution, and `PYTHON` profile to Python 3 execution.
+     - Passed profile through `RunnerInterface.run()` and `NativeSandboxRunner` (`--seccomp-profile <name>`).
+     - Fixed compile-stage status propagation: `RUNTIME_ERROR` from compiler maps to `COMPILE_ERROR`; sandbox outcomes (`TIMEOUT`, `MEMORY_LIMIT`, `BLOCKED_BY_POLICY`, `SANDBOX_ERROR`, `CANCELLED`) truthfully retain their exact status.
+  5. In `tests/`:
+     - Added tests for seccomp CLI argument assembly, stage-specific profile selection, and truthful compile-stage status propagation (`TIMEOUT`, `MEMORY_LIMIT`, `BLOCKED_BY_POLICY`).
+     - Fixed mock runner signatures in `tests/test_pipeline.py`.
+- Verification:
+  - `make -C sandbox clean all`: passed cleanly with `-Wall -Wextra -Werror -O2`.
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 38/38 tests passed in 1.088s.
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED inside container subshell as expected.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero whitespace or conflict errors.
+- Files: `PROGRESS.md`, `sandbox/include/runner.h`, `sandbox/src/seccomp.c`, `sandbox/src/runner.c`, `engine/models.py`, `engine/registry.py`, `engine/runner.py`, `engine/pipeline.py`, `tests/test_pipeline.py`, `tests/test_runner.py`.
+- Linked: LOG-0026.
+- Status: Tier A seccomp profile selection and Tier B status propagation implemented on `phase/2-runtime-adapters`. Live host execution requires unprivileged user namespaces and delegated cgroups. Phase 1 tutor review remains pending.
+- Tutor review: pending

@@ -174,8 +174,9 @@ class RuntimeRegistry:
                     pids=16,
                     max_output_bytes=65536,
                 ),
+                seccomp_profile=SeccompPolicyProfile.PYTHON,
             ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            seccomp_policy=SeccompPolicyProfile.PYTHON,
             cleanup_spec=CleanupSpec(),
         )
         self.register(python3_adapter)
