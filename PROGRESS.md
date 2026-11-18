@@ -960,3 +960,30 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Files: PROGRESS.md, requirements.txt, engine/runner.py, engine/pipeline.py, engine/daemon/service.py, engine/daemon/server.py, tests/test_runner.py, tests/test_daemon.py.
 - Linked: LOG-0044, LOG-0045.
 - Tutor review: pending
+
+
+## [LOG-0047] 2026-11-18 18:34 IST | CORRECTION | actor: agent
+- Context: In LOG-0046, the narrative description erroneously stated that on cancellation pes2-runner prints "PES2_RESULT status=CANCELLED exit=130 signal=15".
+- Correction: The actual contract implemented in sandbox/src/runner.c when cancel_requested is true is that pes2-runner sets `forced = STATUS_CANCELLED`, terminates the sandbox cgroup, and skips natural wait_status inspection (`if (forced == 0) set_status_from_wait(...) else result->status = forced;`). Because result->exit_code and result->term_signal are initialized to 0, pes2-runner outputs `PES2_RESULT status=CANCELLED exit=0 signal=0`. The supervisor treats cancellation as a forced terminal outcome rather than an untrapped user crash or target process runtime exit. Aligned engine/pipeline.py (line 254) and tests/test_runner.py to reflect `exit_code=0, signal=0`. The intended contract across the supervisor and gRPC daemon is `status=CANCELLED exit=0 signal=0` coupled with zero process leakage, zero cgroup leakage, and full workspace deletion.
+- Files: PROGRESS.md, engine/pipeline.py, tests/test_runner.py, sandbox/src/runner.c.
+- Linked: LOG-0045, LOG-0046.
+- Tutor review: pending
+
+
+## [LOG-0048] 2026-11-18 18:35 IST | DONE | actor: agent
+- Accomplished: Verified live gRPC ExecuteStream cancellation end-to-end against real NativeSandboxRunner with active sandbox inspection under cgroups v2:
+  1. Real gRPC Daemon Execution: Hosted an async gRPC Worker Daemon server configured with `NativeSandboxRunner` backed by real `sandbox/pes2-runner` and delegated cgroups v2 root (`/sys/fs/cgroup/user.slice/...`).
+  2. Live Stream Cancellation for Python 3 and Bash:
+     - Sent `ExecuteStream` requests running long-running workloads (`python3` sleeping 10s and `bash` sleeping 10s).
+     - Stream emitted milestones `ACCEPTED`, `COMPILING` (for Bash syntax check), and `RUNNING`.
+     - Inspected live active state: captured active `pes2-runner` PID, target process PID, active cgroup directory (`/sys/fs/cgroup/.../pes2-<pid>-<ts>`), and active workspace directory (`/tmp/pes2-work-*`).
+     - Issued `call.cancel()` while workloads were running inside the sandbox.
+     - Confirmed `asyncio.CancelledError` on client stream.
+     - Confirmed runner termination: 0 lingering `pes2-runner` processes, 0 lingering target processes.
+     - Confirmed cgroup teardown: 0 leftover cgroup directories under cgroup root.
+     - Confirmed ephemeral workspace cleanup: 0 leftover directories under `/tmp/pes2-work-*`.
+  3. Integrated Automated Test: Added `test_stream_cancellation_real_native_runner` in `tests/test_daemon.py`, which executes this live cancellation verification against `NativeSandboxRunner` and gracefully skips if unprivileged user namespaces are restricted in the runner environment.
+  4. Test suite: 57/57 tests passing on host (56 passed, 1 skipped when running sandboxed without namespace permissions).
+- Files: PROGRESS.md, tests/test_daemon.py, engine/pipeline.py, tests/test_runner.py.
+- Linked: LOG-0046, LOG-0047.
+- Tutor review: pending

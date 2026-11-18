@@ -10,7 +10,7 @@ from engine.daemon.server import create_server
 from engine.models import LanguageId, Milestone, ResourceLimits, RunnerResult
 from engine.pipeline import ExecutionPipeline
 from engine.registry import RuntimeRegistry
-from engine.runner import MockSandboxRunner
+from engine.runner import MockSandboxRunner, NativeSandboxRunner
 from proto import execution_pb2, execution_pb2_grpc
 
 
@@ -235,6 +235,59 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
                     ev = await call.read()
                     if ev is grpc.aio.EOF:
                         raise asyncio.CancelledError()
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
+    async def test_stream_cancellation_real_native_runner(self) -> None:
+        """Integration test verifying live gRPC cancellation against real NativeSandboxRunner."""
+        import subprocess
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=2, pipeline=pipeline)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            req = execution_pb2.ExecuteRequest(
+                request_id="req-native-cancel-1",
+                language_id="bash",
+                source_code="#!/bin/bash\nsleep 5\n",
+            )
+            call = stub.ExecuteStream(req)
+            while True:
+                ev = await call.read()
+                if ev is grpc.aio.EOF:
+                    break
+                if ev.HasField("milestone_event") and ev.milestone_event.milestone == execution_pb2.MILESTONE_RUNNING:
+                    break
+
+            call.cancel()
+
+            with self.assertRaises(asyncio.CancelledError):
+                while True:
+                    ev = await call.read()
+                    if ev is grpc.aio.EOF:
+                        raise asyncio.CancelledError()
+
+            await asyncio.sleep(0.3)
+            pes2_pids = subprocess.run(["pgrep", "-f", "pes2-runner"], capture_output=True, text=True).stdout.strip().split()
+            self.assertEqual(len(pes2_pids), 0)
         finally:
             await channel.close()
             await server.stop(grace=0.5)

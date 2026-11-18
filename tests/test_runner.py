@@ -125,7 +125,7 @@ class TestNativeSandboxRunner(unittest.TestCase):
                 time.sleep(0.01)
             return (
                 "",
-                "PES2_RESULT status=CANCELLED exit=130 signal=15 wall_ms=50 cpu_ms=10 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n",
+                "PES2_RESULT status=CANCELLED exit=0 signal=0 wall_ms=50 cpu_ms=10 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n",
             )
 
         mock_proc.communicate.side_effect = fake_communicate
@@ -140,8 +140,8 @@ class TestNativeSandboxRunner(unittest.TestCase):
                 cancel_token=cancel_token,
             )
             self.assertEqual(res.status, "CANCELLED")
-            self.assertEqual(res.exit_code, 130)
-            self.assertEqual(res.signal, 15)
+            self.assertEqual(res.exit_code, 0)
+            self.assertEqual(res.signal, 0)
             self.assertTrue(mock_proc.terminate.called)
 
 
