@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package polyexecution.v1;
+
+enum Milestone {
+  MILESTONE_UNSPECIFIED = 0;
+  MILESTONE_ACCEPTED = 1;
+  MILESTONE_COMPILING = 2;
+  MILESTONE_RUNNING = 3;
+  MILESTONE_COMPLETED = 4;
+  MILESTONE_COMPILE_ERROR = 5;
+  MILESTONE_RUNTIME_ERROR = 6;
+  MILESTONE_TIMEOUT = 7;
+  MILESTONE_OUTPUT_LIMIT = 8;
+  MILESTONE_MEMORY_LIMIT = 9;
+  MILESTONE_BLOCKED_BY_POLICY = 10;
+  MILESTONE_SANDBOX_ERROR = 11;
+  MILESTONE_CANCELLED = 12;
+}
+
+message ResourceLimits {
+  int32 cpu_ms = 1;
+  int32 wall_ms = 2;
+  int32 memory_kb = 3;
+  int32 pids = 4;
+  int32 max_output_bytes = 5;
+}
+
+message ExecuteRequest {
+  string request_id = 1;
+  string language_id = 2;
+  string source_code = 3;
+  string stdin = 4;
+  ResourceLimits custom_limits = 5;
+}
+
+message MilestoneEvent {
+  Milestone milestone = 1;
+  int64 timestamp_ms = 2;
+  string details = 3;
+}
+
+message ExecutionResult {
+  string request_id = 1;
+  string language_id = 2;
+  Milestone final_status = 3;
+  repeated MilestoneEvent milestones = 4;
+  int32 exit_code = 5;
+  int32 signal = 6;
+  int32 wall_ms = 7;
+  int32 cpu_ms = 8;
+  int32 peak_memory_kb = 9;
+  string stdout = 10;
+  string stderr = 11;
+  string compile_output = 12;
+}
+
+message ExecutionProgressEvent {
+  oneof event {
+    MilestoneEvent milestone_event = 1;
+    ExecutionResult result = 2;
+  }
+}
+
+message RuntimeInfo {
+  string id = 1;
+  string display_name = 2;
+  string family = 3;
+  string official_version = 4;
+  string installed_version = 5;
+  bool is_installed = 6;
+}
+
+message GetSupportedRuntimesRequest {}
+
+message GetSupportedRuntimesResponse {
+  repeated RuntimeInfo runtimes = 1;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+  string runner_version = 2;
+  int32 active_workers = 3;
+}
+
+service ExecutionWorkerService {
+  rpc ExecuteStream (ExecuteRequest) returns (stream ExecutionProgressEvent);
+  rpc ExecuteSync (ExecuteRequest) returns (ExecutionResult);
+  rpc GetSupportedRuntimes (GetSupportedRuntimesRequest) returns (GetSupportedRuntimesResponse);
+  rpc HealthCheck (HealthCheckRequest) returns (HealthCheckResponse);
+}

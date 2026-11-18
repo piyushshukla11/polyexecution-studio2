@@ -62,6 +62,7 @@ class SeccompPolicyProfile(str, Enum):
     STRICT_NATIVE = "strict"
     COMPILER = "compiler"
     PYTHON = "python"
+    BASH = "bash"
     JVM_PERMISSIVE = "jvm_permissive"
     V8_NODE = "v8_node"
 
@@ -107,6 +108,7 @@ class CompileSpec:
 class ExecutionSpec:
     runner_bin: str
     execution_args: List[str] = field(default_factory=list)
+    source_filename: Optional[str] = None
     default_resource_limits: ResourceLimits = field(default_factory=ResourceLimits)
     seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE
 
@@ -129,6 +131,10 @@ class RuntimeAdapter:
     execution_spec: ExecutionSpec
     seccomp_policy: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE
     cleanup_spec: CleanupSpec = field(default_factory=CleanupSpec)
+
+    @property
+    def is_installed(self) -> bool:
+        return bool(self.installed_version) and not self.installed_version.startswith("Not installed")
 
 
 @dataclass(frozen=True)

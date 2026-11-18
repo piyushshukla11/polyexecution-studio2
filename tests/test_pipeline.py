@@ -367,6 +367,129 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
         self.assertIn("not found in registry", res.stderr)
 
+    def test_bash_success_milestones(self) -> None:
+        # Bash stage 1 syntax check success, stage 2 execution success
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 10, 5, 1024, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 20, 10, 2048, "hello from bash\n", "")
+        )
+
+        request = ExecutionRequest(
+            request_id="req-bash-1",
+            language_id=LanguageId.BASH,
+            source_code="echo 'hello from bash'\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello from bash\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+        # Stage 1: syntax check
+        self.assertEqual(self.runner.invocations[0]["seccomp_profile"], SeccompPolicyProfile.BASH)
+        self.assertIn("-n", self.runner.invocations[0]["target_argv"])
+        # Stage 2: execution
+        self.assertEqual(self.runner.invocations[1]["seccomp_profile"], SeccompPolicyProfile.BASH)
+        self.assertIn("/workspace/solution.sh", self.runner.invocations[1]["target_argv"])
+
+    def test_bash_syntax_error_emits_compile_error(self) -> None:
+        # Syntax check returns exit 2 with diagnostic
+        syntax_err_msg = "/workspace/solution.sh: line 1: syntax error near unexpected token `then'"
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 2, 0, 10, 5, 1024, "", syntax_err_msg)
+        )
+
+        request = ExecutionRequest(
+            request_id="req-bash-bad-syntax",
+            language_id=LanguageId.BASH,
+            source_code="if then\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(res.exit_code, 2)
+        self.assertIn("syntax error near unexpected token `then'", res.compile_output or "")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        # Stage 2 MUST NOT have run
+        self.assertEqual(len(self.runner.invocations), 1)
+
+    def test_bash_runtime_error(self) -> None:
+        # Syntax check passes, script exits with runtime error
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 10, 5, 1024, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 20, 10, 2048, "", "exit 1")
+        )
+
+        request = ExecutionRequest(
+            request_id="req-bash-rt-err",
+            language_id=LanguageId.BASH,
+            source_code="exit 1\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+
+    def test_bash_timeout(self) -> None:
+        # Syntax check passes, script times out
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 10, 5, 1024, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("TIMEOUT", 124, 9, 2000, 100, 2048, "", "")
+        )
+
+        request = ExecutionRequest(
+            request_id="req-bash-timeout",
+            language_id=LanguageId.BASH,
+            source_code="sleep 10\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.TIMEOUT)
+        self.assertEqual(res.exit_code, 124)
+
+    def test_uninstalled_go_rust_fail_safely(self) -> None:
+        # Requesting Go
+        go_req = ExecutionRequest(
+            request_id="req-go",
+            language_id=LanguageId.GO,
+            source_code="package main\nfunc main() {}\n",
+        )
+        go_res = self.pipeline.execute(go_req)
+        self.assertEqual(go_res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("Toolchain for 'go' is not installed", go_res.stderr)
+
+        # Requesting Rust
+        rust_req = ExecutionRequest(
+            request_id="req-rust",
+            language_id=LanguageId.RUST,
+            source_code="fn main() {}\n",
+        )
+        rust_res = self.pipeline.execute(rust_req)
+        self.assertEqual(rust_res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("Toolchain for 'rust' is not installed", rust_res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

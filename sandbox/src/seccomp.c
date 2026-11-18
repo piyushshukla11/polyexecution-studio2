@@ -14,7 +14,8 @@
 int seccomp_apply_profile(seccomp_profile_t profile) {
     if (profile != SECCOMP_PROFILE_STRICT &&
         profile != SECCOMP_PROFILE_COMPILER &&
-        profile != SECCOMP_PROFILE_PYTHON) {
+        profile != SECCOMP_PROFILE_PYTHON &&
+        profile != SECCOMP_PROFILE_BASH) {
         errno = EINVAL;
         return -1;
     }
@@ -90,6 +91,26 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         };
         for (size_t i = 0; i < sizeof(python_allowed) / sizeof(python_allowed[0]); ++i) {
             if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, python_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+    } else if (profile == SECCOMP_PROFILE_BASH) {
+        /*
+         * Shell runtime & syntax check permissions:
+         * - getresuid / getresgid: user/group credential inspection on startup
+         * - getpgrp: process group inspection during shell initialization
+         * - wait4: reaping subshell pipelines and child processes
+         */
+        const int bash_allowed[] = {
+            SCMP_SYS(getresuid),
+            SCMP_SYS(getresgid),
+            SCMP_SYS(getpgrp),
+            SCMP_SYS(wait4)
+        };
+        for (size_t i = 0; i < sizeof(bash_allowed) / sizeof(bash_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, bash_allowed[i], 0) < 0) {
                 seccomp_release(ctx);
                 errno = EINVAL;
                 return -1;

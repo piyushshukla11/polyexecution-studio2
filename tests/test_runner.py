@@ -53,10 +53,12 @@ class TestNativeSandboxRunner(unittest.TestCase):
         runner = NativeSandboxRunner(runner_path="/bin/true")
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = ""
-        mock_proc.stderr = "PES2_RESULT status=OK exit=0 signal=0 wall_ms=10 cpu_ms=5 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n"
+        mock_proc.communicate.return_value = (
+            "",
+            "PES2_RESULT status=OK exit=0 signal=0 wall_ms=10 cpu_ms=5 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n",
+        )
 
-        with patch("subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
             res = runner.run(
                 workspace="/tmp",
                 target_bin="/bin/true",
@@ -65,8 +67,8 @@ class TestNativeSandboxRunner(unittest.TestCase):
                 seccomp_profile=SeccompPolicyProfile.COMPILER,
             )
             self.assertEqual(res.status, "OK")
-            self.assertTrue(mock_run.called)
-            cmd = mock_run.call_args[0][0]
+            self.assertTrue(mock_popen.called)
+            cmd = mock_popen.call_args[0][0]
             self.assertIn("--seccomp-profile", cmd)
             idx = cmd.index("--seccomp-profile")
             self.assertEqual(cmd[idx + 1], "compiler")
@@ -78,10 +80,12 @@ class TestNativeSandboxRunner(unittest.TestCase):
         runner = NativeSandboxRunner(runner_path="/bin/true")
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = ""
-        mock_proc.stderr = "PES2_RESULT status=OK exit=0 signal=0 wall_ms=10 cpu_ms=5 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n"
+        mock_proc.communicate.return_value = (
+            "",
+            "PES2_RESULT status=OK exit=0 signal=0 wall_ms=10 cpu_ms=5 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n",
+        )
 
-        with patch("subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
             runner.run(
                 workspace="/tmp",
                 target_bin="/bin/true",
@@ -89,7 +93,7 @@ class TestNativeSandboxRunner(unittest.TestCase):
                 limits=ResourceLimits(),
                 seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
             )
-            cmd = mock_run.call_args[0][0]
+            cmd = mock_popen.call_args[0][0]
             idx = cmd.index("--seccomp-profile")
             self.assertEqual(cmd[idx + 1], "strict")
 
@@ -98,11 +102,47 @@ class TestNativeSandboxRunner(unittest.TestCase):
                 target_bin="/bin/true",
                 target_argv=["foo"],
                 limits=ResourceLimits(),
-                seccomp_profile=SeccompPolicyProfile.PYTHON,
+                seccomp_profile=SeccompPolicyProfile.BASH,
             )
-            cmd = mock_run.call_args[0][0]
+            cmd = mock_popen.call_args[0][0]
             idx = cmd.index("--seccomp-profile")
-            self.assertEqual(cmd[idx + 1], "python")
+            self.assertEqual(cmd[idx + 1], "bash")
+
+    def test_cancel_token_terminates_process(self) -> None:
+        import threading
+        import time
+        from unittest.mock import patch, MagicMock
+
+        runner = NativeSandboxRunner(runner_path="/bin/true")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 130
+        cancel_token = threading.Event()
+
+        def fake_communicate(*args, **kwargs):
+            for _ in range(50):
+                if mock_proc.terminate.called:
+                    break
+                time.sleep(0.01)
+            return (
+                "",
+                "PES2_RESULT status=CANCELLED exit=0 signal=0 wall_ms=50 cpu_ms=10 peak_memory_kb=1024 stdout_bytes=0 stderr_bytes=0\n",
+            )
+
+        mock_proc.communicate.side_effect = fake_communicate
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            cancel_token.set()
+            res = runner.run(
+                workspace="/tmp",
+                target_bin="/bin/true",
+                target_argv=[],
+                limits=ResourceLimits(),
+                cancel_token=cancel_token,
+            )
+            self.assertEqual(res.status, "CANCELLED")
+            self.assertEqual(res.exit_code, 0)
+            self.assertEqual(res.signal, 0)
+            self.assertTrue(mock_proc.terminate.called)
 
 
 if __name__ == "__main__":

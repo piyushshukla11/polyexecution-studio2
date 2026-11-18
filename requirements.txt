@@ -1,0 +1,4 @@
+# PolyExecution Studio 2 — Python Dependencies
+grpcio==1.85.3
+grpcio-tools==1.85.3
+protobuf==7.36.2
