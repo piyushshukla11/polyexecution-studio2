@@ -549,3 +549,43 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0026.
 - Status: Tier A seccomp profile selection and Tier B status propagation implemented on `phase/2-runtime-adapters`. Live host execution requires unprivileged user namespaces and delegated cgroups. Phase 1 tutor review remains pending.
 - Tutor review: pending
+
+
+## [LOG-0028] 2026-11-18 07:55 IST | PLAN | actor: agent
+- Goal: Resolve the two sandbox review points: (1) align UID/GID identity model implementation, header documentation, and architectural claims; (2) make host_has_active_swap() fail closed when /proc/swaps cannot be opened or read.
+- Reason: Tutor review identified: (1) runner.c maps namespace UID/GID 0 to the host user UID/GID and executes target code as namespace UID/GID 0 with capabilities cleared (not UID 65534 nobody), requiring header documentation, comments, and security claims to agree on the single-mapping unprivileged user namespace model; (2) host_has_active_swap() returned 0 upon fopen failure, which could mistakenly treat an unreadable swap state as "no active swap" and fail open when memory.swap.max is absent.
+- Steps:
+  1. In sandbox/src/cgroup.c:
+     - Refactor host_has_active_swap() to accept int *has_swap and return int error code (-1 on fopen or read failure; 0 on success).
+     - In cgroup_init(), if memory.swap.max is not present and host_has_active_swap() returns an error, fail closed immediately (failed = 1). If swap is present, set errno = ENOTSUP and fail closed.
+  2. In sandbox/include/runner.h, sandbox/src/runner.c, and docs/01_ARCHITECTURE.md:
+     - Document the unprivileged single-mapping user namespace identity model: namespace UID/GID 0 maps to host getuid()/getgid() to enable private mount/chroot setup without host root; all capabilities are cleared via SYS_capset before target execution; PR_SET_DUMPABLE and PR_SET_NO_NEW_PRIVS are enforced; explain why unprivileged user namespaces do not map to arbitrary unmapped UIDs like 65534 without multi-user subuid ranges.
+  3. Rebuild sandbox, run sandbox unit tests, run Python unit tests, verify append-only hooks, and check repo hygiene.
+- Files: PROGRESS.md, sandbox/src/cgroup.c, sandbox/include/runner.h, sandbox/src/runner.c, docs/01_ARCHITECTURE.md.
+- Linked: LOG-0027.
+- Expected: host_has_active_swap() fails closed on read error; identity model documented truthfully across headers and architecture; all 38 tests pass.
+- Tutor review: pending
+
+
+## [LOG-0029] 2026-11-18 08:05 IST | DONE | actor: agent
+- Goal: Resolve the two sandbox review points: (1) align UID/GID identity model implementation, header documentation, and architectural claims; (2) make host_has_active_swap() fail closed when /proc/swaps cannot be opened or read.
+- Outcome:
+  1. In `sandbox/src/cgroup.c`:
+     - Refactored `host_has_active_swap(int *has_swap)` to return `int` error status. If `/proc/swaps` cannot be opened or read, it returns `-1`, prompting `cgroup_init` to fail closed immediately (`failed = 1`).
+     - If `/proc/swaps` is read and active swap devices exist while `memory.swap.max` is not supported, `cgroup_init` sets `errno = ENOTSUP` and fails closed.
+  2. In `sandbox/include/runner.h`, `sandbox/src/runner.c`, and `docs/01_ARCHITECTURE.md`:
+     - Explicitly documented the single-mapping unprivileged user namespace identity model: namespace UID/GID 0 maps to host `getuid()`/`getgid()` to allow initial mount/chroot setup without host root privileges.
+     - Documented capability stripping guarantee: before target execution, `SYS_capset` permanently drops all capabilities (`cap_data = {{0}}`), `PR_SET_DUMPABLE=0` is set, and `PR_SET_NO_NEW_PRIVS=1` is locked by seccomp.
+     - Clarified why unprivileged single-mapping user namespaces run target code as namespace UID/GID 0 with zero capabilities (mapping to invoking host user) rather than switching to unmapped UIDs like 65534.
+- Verification:
+  - `make -C sandbox clean all`: passed cleanly with `-Wall -Wextra -Werror -O2`.
+  - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 38/38 tests passed in 1.098s.
+  - `make -C sandbox test`: fail-closed check passed (1/1); discovery checks passed (5/5); runtime isolation reported as SKIPPED inside container subshell as expected.
+  - `bash scripts/test_append_only.sh`: 7/7 passed.
+  - `bash scripts/check_progress_append_only.sh`: passed.
+  - `bash scripts/check_repo_hygiene.sh`: passed.
+  - `git diff --check`: passed with zero errors.
+- Files: `PROGRESS.md`, `sandbox/src/cgroup.c`, `sandbox/include/runner.h`, `sandbox/src/runner.c`, `docs/01_ARCHITECTURE.md`.
+- Linked: LOG-0028.
+- Status: Both sandbox review points resolved on `phase/2-runtime-adapters`. Phase 1 tutor review remains pending.
+- Tutor review: pending

@@ -77,6 +77,11 @@ static int write_proc_file(pid_t pid, const char *leaf, const char *value) {
     return rc;
 }
 
+/*
+ * Maps namespace UID/GID 0 to the unprivileged invoking host UID/GID.
+ * This single mapping grants namespace-local CAP_SYS_ADMIN needed for mount/chroot,
+ * while preventing any host privilege escalation (maps to invoking user on host).
+ */
 static int map_child_ids(pid_t pid, uid_t uid, gid_t gid) {
     char mapping[64];
     char setgroups_path[128];

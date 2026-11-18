@@ -96,9 +96,15 @@ static int cgroup_dir(char *out, size_t cap, const char *root, const char *name)
     return 0;
 }
 
-static int host_has_active_swap(void) {
+/*
+ * Inspect host swap state from /proc/swaps.
+ * Returns 0 on successful read (setting *has_swap to 1 if active devices exist, 0 otherwise).
+ * Returns -1 on failure to open/read /proc/swaps so callers can fail closed.
+ */
+static int host_has_active_swap(int *has_swap) {
+    if (!has_swap) { errno = EINVAL; return -1; }
     FILE *f = fopen("/proc/swaps", "re");
-    if (!f) return 0;
+    if (!f) return -1; /* Fail closed: cannot determine swap state */
     char line[256];
     int count = 0;
     while (fgets(line, sizeof(line), f)) {
@@ -107,7 +113,8 @@ static int host_has_active_swap(void) {
     int saved = errno;
     (void)fclose(f);
     errno = saved;
-    return count > 1; /* First line is header */
+    *has_swap = (count > 1); /* First line is header */
+    return 0;
 }
 
 int cgroup_init(const char *root, const char *name, uint32_t max_pids,
@@ -172,9 +179,15 @@ int cgroup_init(const char *root, const char *name, uint32_t max_pids,
                     (void)fclose(sf);
                 }
             }
-        } else if (host_has_active_swap()) {
-            errno = ENOTSUP;
-            failed = 1;
+        } else {
+            int has_swap = 0;
+            if (host_has_active_swap(&has_swap) != 0) {
+                /* Failed to inspect swap state: fail closed */
+                failed = 1;
+            } else if (has_swap) {
+                errno = ENOTSUP;
+                failed = 1;
+            }
         }
     }
     if (!failed && make_path(file, sizeof(file), root, name, "memory.oom.group") != 0) failed = 1;

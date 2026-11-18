@@ -4,6 +4,33 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+/*
+ * PES2 User Namespace Identity & Capability Model:
+ *
+ * 1. Single Unprivileged Mapping:
+ *    The runner uses unprivileged CLONE_NEWUSER. Without root privileges or setuid helpers
+ *    (newuidmap/newgidmap), Linux allows writing exactly one mapping to uid_map / gid_map,
+ *    mapping namespace UID/GID 0 to the invoking host UID/GID (getuid() / getgid()).
+ *
+ * 2. Setup Privilege:
+ *    Inside the new user namespace, UID 0 initially possesses capabilities (CAP_SYS_ADMIN, etc.)
+ *    within that namespace. This is required to perform unprivileged mount operations (bind-mounting
+ *    read-only system directories, creating an ephemeral tmpfs /tmp, and bind-mounting /workspace)
+ *    and chrooting into the private rootfs without host root access.
+ *
+ * 3. Complete Capability Stripping Before Target Execution:
+ *    Once the isolated mount tree and chroot are in place, the child process permanently clears all
+ *    capabilities using SYS_capset (cap_data = {{0}}). PR_SET_DUMPABLE is set to 0, and
+ *    PR_SET_NO_NEW_PRIVS is locked by the seccomp filter.
+ *
+ * 4. Runtime Identity:
+ *    The target process executes as namespace UID/GID 0 with zero capabilities inside the sandbox.
+ *    On the host system, all actions map strictly to the invoking unprivileged host user. The target
+ *    does not switch to an unmapped UID (such as 65534 nobody) because in a single-mapping namespace
+ *    any other UID is unmapped (overflowuid), which would prevent access to workspace files and
+ *    require multi-user subuid delegations.
+ */
+
 #define RUNNER_OUTPUT_CAP_BYTES 65536U
 #define RUNNER_MAX_TIMEOUT_MS 60000U
 #define RUNNER_MIN_MEMORY_KB 16384U
