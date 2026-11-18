@@ -110,9 +110,12 @@ static int host_has_active_swap(int *has_swap) {
     while (fgets(line, sizeof(line), f)) {
         count++;
     }
-    int saved = errno;
-    (void)fclose(f);
-    errno = saved;
+    int read_err = ferror(f);
+    int close_err = fclose(f);
+    if (read_err || close_err != 0) {
+        if (!errno) errno = EIO;
+        return -1; /* Fail closed: read or close failure */
+    }
     *has_swap = (count > 1); /* First line is header */
     return 0;
 }
@@ -176,7 +179,9 @@ int cgroup_init(const char *root, const char *name, uint32_t max_pids,
                     if (fscanf(sf, "%31s", swap_val) != 1 || strcmp(swap_val, "0") != 0) {
                         failed = 1;
                     }
-                    (void)fclose(sf);
+                    if (fclose(sf) != 0) {
+                        failed = 1;
+                    }
                 }
             }
         } else {
