@@ -64,15 +64,30 @@ static void action_compiler_getrusage(void) {
     if (getrusage(RUSAGE_SELF, &ru) != 0) _exit(3);
 }
 
+static void action_strict_fork_permitted(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    /*
+     * fork() is explicitly permitted under strict seccomp to allow standard
+     * thread/process creation. Process quantity is bounded by cgroups v2 pids.max.
+     */
+    pid_t child = fork();
+    if (child < 0) _exit(3);
+    if (child == 0) _exit(0);
+    /* Parent exits immediately without wait4() because wait4 is omitted from strict */
+    _exit(0);
+}
+
 static void action_strict_wait4(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
     int status = 0;
+    /* wait4 is omitted from strict profile to restrict user binaries from reaping loops */
     wait4(-1, &status, WNOHANG, NULL);
 }
 
 static void action_compiler_wait4(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_COMPILER) != 0) _exit(2);
     int status = 0;
+    /* Calling wait4 with -1 and WNOHANG returns -1 with ECHILD, but does not get killed by SIGSYS */
     wait4(-1, &status, WNOHANG, NULL);
 }
 
@@ -86,8 +101,15 @@ static void action_strict_network_blocked(void) {
     socket(AF_INET, SOCK_STREAM, 0);
 }
 
+static void action_strict_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    /* clone with CLONE_NEWUSER: must trigger SIGSYS */
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
 static void action_compiler_clone_user_blocked(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_COMPILER) != 0) _exit(2);
+    /* clone with CLONE_NEWUSER: must trigger SIGSYS */
     syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
 }
 
@@ -128,7 +150,15 @@ int main(void) {
         return 1;
     }
 
-    /* Test 3: wait4 blocked under strict profile */
+    /* Test 3: fork() permitted under strict profile */
+    if (expect_success(action_strict_fork_permitted)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT permits fork() without SIGSYS (bounded by pids.max)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT failed on fork()!\n");
+        return 1;
+    }
+
+    /* Test 4: wait4 blocked under strict profile */
     if (expect_sigsys(action_strict_wait4)) {
         printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills wait4 with SIGSYS\n");
     } else {
@@ -136,7 +166,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 4: wait4 permitted under compiler profile */
+    /* Test 5: wait4 permitted under compiler profile */
     if (expect_success(action_compiler_wait4)) {
         printf("  [PASS] SECCOMP_PROFILE_COMPILER permits wait4 without SIGSYS\n");
     } else {
@@ -144,7 +174,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 5: network socket blocked under compiler profile */
+    /* Test 6: network socket blocked under compiler profile */
     if (expect_sigsys(action_compiler_network_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_COMPILER kills socket() with SIGSYS (network denied)\n");
     } else {
@@ -152,7 +182,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 6: network socket blocked under strict profile */
+    /* Test 7: network socket blocked under strict profile */
     if (expect_sigsys(action_strict_network_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_STRICT kills socket() with SIGSYS (network denied)\n");
     } else {
@@ -160,7 +190,15 @@ int main(void) {
         return 1;
     }
 
-    /* Test 7: CLONE_NEWUSER blocked under compiler profile */
+    /* Test 8: CLONE_NEWUSER blocked under strict profile */
+    if (expect_sigsys(action_strict_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 9: CLONE_NEWUSER blocked under compiler profile */
     if (expect_sigsys(action_compiler_clone_user_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_COMPILER kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
     } else {
@@ -168,7 +206,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 8: unshare blocked under compiler profile */
+    /* Test 10: unshare blocked under compiler profile */
     if (expect_sigsys(action_compiler_unshare_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_COMPILER kills unshare() with SIGSYS (namespaces denied)\n");
     } else {
@@ -176,7 +214,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 9: direct open permitted under python profile */
+    /* Test 11: direct open permitted under python profile */
     if (expect_success(action_python_open)) {
         printf("  [PASS] SECCOMP_PROFILE_PYTHON permits direct open() without SIGSYS\n");
     } else {
@@ -184,7 +222,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 10: network socket blocked under python profile */
+    /* Test 12: network socket blocked under python profile */
     if (expect_sigsys(action_python_network_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_PYTHON kills socket() with SIGSYS (network denied)\n");
     } else {
@@ -194,7 +232,7 @@ int main(void) {
 
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 10 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 12 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

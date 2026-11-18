@@ -638,3 +638,53 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0030.
 - Status: Phase 2 runtime adapter slice (C, C++, Python 3) fully verified live with seccomp and delegated cgroup v2. Requesting Tutor review before any merge.
 - Tutor review: pending
+
+
+## [LOG-0032] 2026-11-18 09:05 IST | CORRECTION | actor: agent
+- Context: Briefing descriptions and progress log notes regarding process creation isolation in `SECCOMP_PROFILE_STRICT`.
+- Correction: Corrected the claim that `SECCOMP_PROFILE_STRICT` blocks process creation (`fork`, `clone`). As implemented in `sandbox/src/seccomp.c:96-112`, `fork()`, `vfork()`, and `clone()` (when namespace flags are absent) are explicitly allowed across all profiles to permit standard threading and non-namespace child processes. Task count containment is enforced by cgroups v2 (`pids.max`), not seccomp. What `SECCOMP_PROFILE_STRICT` denies is namespace creation (`CLONE_NEW*`), `clone3` (returns `ENOSYS`), and child process reaping (`wait4`/`waitid` are omitted).
+- Impact: Architectural documentation and test assertions now accurately reflect that process creation is permitted under strict seccomp, while namespace creation and process waiting are blocked.
+
+
+## [LOG-0033] 2026-11-18 09:06 IST | PLAN | actor: agent
+- Goal: (1) Fix `host_has_active_swap()` in `sandbox/src/cgroup.c` to check `ferror()` after the `fgets()` loop and check `fclose()` return status, guaranteeing that any read or stream failure fails closed; (2) Add regression tests in `sandbox/tests/test_seccomp.c` confirming that `fork()` without namespaces succeeds under `SECCOMP_PROFILE_STRICT`, while `wait4()` and `CLONE_NEWUSER` are blocked by `SIGSYS`.
+- Reason: Tutor review identified: (1) in `sandbox/src/cgroup.c:104`, if `fgets()` stops due to an I/O read error or `fclose()` fails, `ferror()` was not checked, allowing a read error to return 0 and fail open as "no swap"; (2) briefings and tests must truthfully demonstrate that `fork()` is permitted under `STRICT` while `wait4()` and namespace creation are blocked.
+- Steps:
+  1. In `sandbox/src/cgroup.c`:
+     - Refactor `host_has_active_swap()` to inspect `ferror(f)` and `fclose(f) != 0`. On error, set `errno` and return `-1` to fail closed.
+     - Check `fclose(sf) != 0` in the `memory.swap.max` read validation block.
+  2. In `sandbox/tests/test_seccomp.c`:
+     - Add action `action_strict_fork_permitted` asserting that `fork()` executes successfully without `SIGSYS` under `SECCOMP_PROFILE_STRICT`.
+     - Retain and document `action_strict_wait4` asserting that `wait4()` is killed by `SIGSYS` under `SECCOMP_PROFILE_STRICT`.
+     - Retain and document `action_compiler_clone_user_blocked` asserting namespace denial.
+  3. Rebuild sandbox, run all unit tests, discovery checks, Python suite, and runtime tests.
+  4. Append linked `DONE` entry `LOG-0034`.
+- Files: PROGRESS.md, sandbox/src/cgroup.c, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0031.
+- Expected: Swap inspection fails closed on any read or close error; seccomp unit tests truthfully verify allowed `fork()` and denied `wait4()`/`CLONE_NEWUSER`; all tests pass.
+- Tutor review: pending
+
+
+## [LOG-0034] 2026-11-18 09:17 IST | DONE | actor: agent
+- Goal: (1) Fix `host_has_active_swap()` in `sandbox/src/cgroup.c` to check `ferror()` after the `fgets()` loop and check `fclose()` return status, guaranteeing that any read or stream failure fails closed; (2) Add regression tests in `sandbox/tests/test_seccomp.c` confirming that `fork()` without namespaces succeeds under `SECCOMP_PROFILE_STRICT`, while `wait4()` and `CLONE_NEWUSER` are blocked by `SIGSYS`.
+- Outcome:
+  1. In `sandbox/src/cgroup.c`:
+     - Refactored `host_has_active_swap()` to inspect `ferror(f)` and verify `fclose(f) == 0`. If either indicates an error, it returns `-1` (setting `errno` to `EIO` if unset), causing `cgroup_init` to fail closed immediately.
+     - Updated the `memory.swap.max` verification block to check `fclose(sf) != 0` and fail closed.
+  2. In `sandbox/tests/test_seccomp.c`:
+     - Added test assertion for `fork()` under `SECCOMP_PROFILE_STRICT`: passed cleanly without `SIGSYS`, truthfully confirming that process/thread creation is permitted by seccomp (bounded by cgroups v2 `pids.max`).
+     - Added test assertion for `clone(CLONE_NEWUSER)` under `SECCOMP_PROFILE_STRICT`: passed, confirming namespace creation is killed by `SIGSYS`.
+     - Retained test assertion for `wait4()` under `SECCOMP_PROFILE_STRICT`: passed, confirming process reaping is killed by `SIGSYS`.
+     - Expanded focused seccomp profile unit checks from 10 to 12 (all 12/12 passed).
+  3. Verification:
+     - `make -C sandbox test`: passed cleanly (12/12 seccomp unit checks, 5/5 cgroup discovery checks).
+     - `PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime`: passed 10/10 strict runtime fixtures against delegated cgroup `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice`.
+     - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 39/39 tests passed in 1.122s.
+     - `bash scripts/test_append_only.sh`: 7/7 passed.
+     - `bash scripts/check_progress_append_only.sh`: passed.
+     - `bash scripts/check_repo_hygiene.sh`: passed.
+     - `git diff --check`: passed with zero whitespace or conflict markers.
+- Files: `PROGRESS.md`, `sandbox/src/cgroup.c`, `sandbox/tests/test_seccomp.c`.
+- Linked: LOG-0033.
+- Status: Swap check fail-closed hardening and process creation seccomp documentation/tests resolved on `phase/2-runtime-adapters`. Requesting Tutor review before any merge.
+- Tutor review: pending
