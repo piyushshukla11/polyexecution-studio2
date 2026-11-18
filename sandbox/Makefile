@@ -17,12 +17,18 @@ src/%.o: src/%.c include/runner.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test: $(TARGET)
+	$(CC) $(CFLAGS) src/seccomp.c tests/test_seccomp.c -o tests/test_seccomp $(LDFLAGS)
+	./tests/test_seccomp
+	@rm -f tests/test_seccomp
 	bash tests/test_cgroup_discovery.sh
 	bash tests/test_runner.sh
 
 test-runtime: $(TARGET)
+	$(CC) $(CFLAGS) src/seccomp.c tests/test_seccomp.c -o tests/test_seccomp $(LDFLAGS)
+	./tests/test_seccomp
+	@rm -f tests/test_seccomp
 	bash tests/test_cgroup_discovery.sh
 	PES2_REQUIRE_RUNTIME=1 bash tests/test_runner.sh
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) tests/test_seccomp

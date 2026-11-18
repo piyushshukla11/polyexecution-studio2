@@ -7,15 +7,22 @@
 #include <sys/prctl.h>
 
 /*
- * Default-deny syscall policy for the initial native runner.
- * The target runs after namespaces, mounts, rlimits, and cgroup attachment.
- * Keep this allowlist small; adding a syscall requires a use case and test.
+ * Validated, explicit seccomp-bpf syscall filtering profiles.
+ * Preserves default-deny architecture, namespace blocking, network isolation,
+ * and PR_SET_NO_NEW_PRIVS privilege containment across all profiles.
  */
-int seccomp_apply_strict_filter(void) {
+int seccomp_apply_profile(seccomp_profile_t profile) {
+    if (profile != SECCOMP_PROFILE_STRICT &&
+        profile != SECCOMP_PROFILE_COMPILER &&
+        profile != SECCOMP_PROFILE_PYTHON) {
+        errno = EINVAL;
+        return -1;
+    }
+
     scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_KILL_PROCESS);
     if (ctx == NULL) return -1;
 
-    const int allowed[] = {
+    const int base_allowed[] = {
         SCMP_SYS(read), SCMP_SYS(write), SCMP_SYS(readv), SCMP_SYS(writev),
         SCMP_SYS(close), SCMP_SYS(fstat), SCMP_SYS(newfstatat), SCMP_SYS(statx),
         SCMP_SYS(lseek), SCMP_SYS(pread64), SCMP_SYS(pwrite64),
@@ -39,11 +46,54 @@ int seccomp_apply_strict_filter(void) {
         SCMP_SYS(umask)
     };
 
-    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i) {
-        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, allowed[i], 0) < 0) {
+    for (size_t i = 0; i < sizeof(base_allowed) / sizeof(base_allowed[0]); ++i) {
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, base_allowed[i], 0) < 0) {
             seccomp_release(ctx);
             errno = EINVAL;
             return -1;
+        }
+    }
+
+    if (profile == SECCOMP_PROFILE_COMPILER) {
+        /*
+         * Narrowly scoped permissions strictly required by build tools (gcc, clang++):
+         * - wait4 / waitid: for reaping child compiler processes (cc1, as, ld, collect2)
+         * - pipe / unlink / rename / chmod / mkdir: intermediate file management in /tmp and /workspace
+         * - sched_getaffinity: CPU topology awareness
+         * - getrusage: process resource accounting used by assembler (GNU as)
+         */
+        const int compiler_allowed[] = {
+            SCMP_SYS(wait4), SCMP_SYS(waitid),
+            SCMP_SYS(pipe), SCMP_SYS(unlink), SCMP_SYS(unlinkat),
+            SCMP_SYS(rename), SCMP_SYS(renameat), SCMP_SYS(renameat2),
+            SCMP_SYS(chmod), SCMP_SYS(fchmod), SCMP_SYS(fchmodat),
+            SCMP_SYS(mkdir), SCMP_SYS(mkdirat),
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(getrusage)
+        };
+        for (size_t i = 0; i < sizeof(compiler_allowed) / sizeof(compiler_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, compiler_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+    } else if (profile == SECCOMP_PROFILE_PYTHON) {
+        /*
+         * Interpreted scripting permissions:
+         * - sched_getaffinity: os.cpu_count() multi-core affinity queries
+         * - open: direct open syscall invoked during Python 3 runtime initialization
+         */
+        const int python_allowed[] = {
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(open)
+        };
+        for (size_t i = 0; i < sizeof(python_allowed) / sizeof(python_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, python_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
         }
     }
 
@@ -75,4 +125,8 @@ int seccomp_apply_strict_filter(void) {
     seccomp_release(ctx);
     errno = saved;
     return rc;
+}
+
+int seccomp_apply_strict_filter(void) {
+    return seccomp_apply_profile(SECCOMP_PROFILE_STRICT);
 }

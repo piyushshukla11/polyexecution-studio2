@@ -77,6 +77,11 @@ static int write_proc_file(pid_t pid, const char *leaf, const char *value) {
     return rc;
 }
 
+/*
+ * Maps namespace UID/GID 0 to the unprivileged invoking host UID/GID.
+ * This single mapping grants namespace-local CAP_SYS_ADMIN needed for mount/chroot,
+ * while preventing any host privilege escalation (maps to invoking user on host).
+ */
 static int map_child_ids(pid_t pid, uid_t uid, gid_t gid) {
     char mapping[64];
     char setgroups_path[128];
@@ -242,7 +247,7 @@ static int child_main(void *opaque) {
     struct __user_cap_data_struct cap_data[2] = {{0}};
     if (syscall(SYS_capset, &cap_header, cap_data) != 0) child_error(ctx->exec_error_write, errno);
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) child_error(ctx->exec_error_write, errno);
-    if (seccomp_apply_strict_filter() != 0) child_error(ctx->exec_error_write, errno);
+    if (seccomp_apply_profile(ctx->config->seccomp_profile) != 0) child_error(ctx->exec_error_write, errno);
 
     char *const safe_env[] = {
         "PATH=/usr/bin:/bin",
@@ -671,6 +676,7 @@ int main(int argc, char **argv) {
         .memory_limit_kb = 65536,
         .max_output_bytes = RUNNER_OUTPUT_CAP_BYTES,
         .max_pids = 32,
+        .seccomp_profile = SECCOMP_PROFILE_STRICT,
         .cgroup_root = getenv("PES2_CGROUP_ROOT") ? getenv("PES2_CGROUP_ROOT") : "/sys/fs/cgroup"
     };
     int i = 1;
@@ -685,6 +691,15 @@ int main(int argc, char **argv) {
             if (parse_u32(argv[++i], RUNNER_MIN_MEMORY_KB, RUNNER_MAX_MEMORY_KB, &config.memory_limit_kb) != 0) goto usage;
         } else if (strcmp(argv[i], "--pids") == 0 && i + 1 < argc) {
             if (parse_u32(argv[++i], 1, RUNNER_MAX_PIDS, &config.max_pids) != 0) goto usage;
+        } else if (strcmp(argv[i], "--seccomp-profile") == 0 && i + 1 < argc) {
+            const char *prof = argv[++i];
+            if (strcmp(prof, "strict") == 0) config.seccomp_profile = SECCOMP_PROFILE_STRICT;
+            else if (strcmp(prof, "compiler") == 0) config.seccomp_profile = SECCOMP_PROFILE_COMPILER;
+            else if (strcmp(prof, "python") == 0) config.seccomp_profile = SECCOMP_PROFILE_PYTHON;
+            else {
+                fprintf(stderr, "runner: invalid or unsupported seccomp profile '%s'\n", prof);
+                return STATUS_SANDBOX_ERROR;
+            }
         } else {
             goto usage;
         }
@@ -710,6 +725,6 @@ int main(int argc, char **argv) {
     return status;
 
 usage:
-    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
     return STATUS_SANDBOX_ERROR;
 }

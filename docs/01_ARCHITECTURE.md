@@ -60,6 +60,7 @@ Rather than hardcoding language commands into monolithic handlers, each runtime 
    - `memory.max` & `memory.high`: Hard ceiling triggering kernel OOM killer before host instability occurs.
    - `pids.max`: Hard task ceiling (typically 32 to 64) containing fork bombs.
 2. **Linux User & Mount Namespaces (`CLONE_NEWUSER`, `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWNET`, `CLONE_NEWIPC`)**:
+   - `CLONE_NEWUSER`: Single unprivileged mapping (`0 -> host_uid`, `0 -> host_gid`). Namespace UID 0 provides initial namespace-local capabilities for `mount` and `chroot` setup without requiring host root privileges. Before target execution (`execve`), all capabilities are permanently cleared (`SYS_capset`), `PR_SET_DUMPABLE=0` is enforced, and `PR_SET_NO_NEW_PRIVS=1` is locked by seccomp. Target code executes as namespace UID 0 with zero capabilities, mapping strictly to the invoking unprivileged host user.
    - `CLONE_NEWNET`: Loopback only (`lo` down or unconfigured); outbound network sockets return `EPERM` or `ENETUNREACH`.
    - `CLONE_NEWNS`: Private mount namespace with `pivot_root` or `chroot` into a read-only rootfs; `/workspace` is mounted `noexec` or `nodev` depending on stage.
    - `CLONE_NEWPID`: Process tree virtualization; target process runs as PID 1 inside the sandbox.
