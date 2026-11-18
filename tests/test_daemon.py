@@ -1,0 +1,179 @@
+"""Integration tests for the asynchronous gRPC Worker Daemon."""
+
+import asyncio
+import os
+import unittest
+
+import grpc
+
+from engine.daemon.server import create_server
+from engine.models import LanguageId, Milestone, ResourceLimits, RunnerResult
+from engine.pipeline import ExecutionPipeline
+from engine.registry import RuntimeRegistry
+from engine.runner import MockSandboxRunner
+from proto import execution_pb2, execution_pb2_grpc
+
+
+class DaemonMockRunner(MockSandboxRunner):
+    """Produces mock output artifacts for compiled languages when needed."""
+
+    def run(self, workspace, target_bin, target_argv, limits, stdin_content="", **kwargs):
+        res = super().run(workspace, target_bin, target_argv, limits, stdin_content, **kwargs)
+        if res.status == "OK" and res.exit_code == 0:
+            if target_bin.endswith("gcc") or target_bin.endswith("clang++") or target_bin.endswith("g++"):
+                out_path = os.path.join(workspace, "a.out")
+                with open(out_path, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(out_path, 0o755)
+        return res
+
+
+class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.registry = RuntimeRegistry()
+        self.runner = DaemonMockRunner()
+        self.pipeline = ExecutionPipeline(registry=self.registry, runner=self.runner)
+
+        # Start daemon on random ephemeral port (port 0)
+        self.server, self.port = create_server(
+            host="127.0.0.1",
+            port=0,
+            max_workers=4,
+            pipeline=self.pipeline,
+        )
+        await self.server.start()
+
+        # Connect gRPC client channel
+        self.channel = grpc.aio.insecure_channel(f"127.0.0.1:{self.port}")
+        self.stub = execution_pb2_grpc.ExecutionWorkerServiceStub(self.channel)
+
+    async def asyncTearDown(self) -> None:
+        await self.channel.close()
+        await self.server.stop(grace=1.0)
+
+    async def test_health_check(self) -> None:
+        req = execution_pb2.HealthCheckRequest()
+        resp = await self.stub.HealthCheck(req)
+        self.assertEqual(resp.status, execution_pb2.HealthCheckResponse.SERVING)
+        self.assertEqual(resp.runner_version, "pes2-runner-2.0")
+        self.assertEqual(resp.active_workers, 0)
+
+    async def test_get_supported_runtimes(self) -> None:
+        req = execution_pb2.GetSupportedRuntimesRequest()
+        resp = await self.stub.GetSupportedRuntimes(req)
+
+        runtime_map = {r.id: r for r in resp.runtimes}
+        self.assertIn("c", runtime_map)
+        self.assertIn("cpp", runtime_map)
+        self.assertIn("python3", runtime_map)
+        self.assertIn("bash", runtime_map)
+        self.assertIn("go", runtime_map)
+        self.assertIn("rust", runtime_map)
+
+        # Bash verified installed
+        self.assertTrue(runtime_map["bash"].is_installed)
+        self.assertEqual(runtime_map["bash"].display_name, "Bash")
+
+        # Go and Rust verified uninstalled
+        self.assertFalse(runtime_map["go"].is_installed)
+        self.assertEqual(runtime_map["go"].installed_version, "Not installed on host")
+        self.assertFalse(runtime_map["rust"].is_installed)
+        self.assertEqual(runtime_map["rust"].installed_version, "Not installed on host")
+
+    async def test_execute_sync_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 10, 5, 2048, "daemon sync ok\n", "")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-sync-1",
+            language_id="python3",
+            source_code="print('daemon sync ok')\n",
+        )
+        resp = await self.stub.ExecuteSync(req)
+
+        self.assertEqual(resp.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(resp.exit_code, 0)
+        self.assertEqual(resp.stdout, "daemon sync ok\n")
+        self.assertEqual(resp.request_id, "req-sync-1")
+
+    async def test_execute_stream_milestones_c(self) -> None:
+        # C compile success, execution success
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 100, 80, 16384, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 15, 10, 4096, "hello c stream\n", "")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-stream-c",
+            language_id="c",
+            source_code="#include <stdio.h>\nint main() { printf(\"hello c stream\\n\"); return 0; }\n",
+        )
+
+        events = []
+        async for progress in self.stub.ExecuteStream(req):
+            events.append(progress)
+
+        # Expected events: 4 MilestoneEvents (ACCEPTED, COMPILING, RUNNING, COMPLETED), followed by result
+        milestone_events = [e.milestone_event.milestone for e in events if e.HasField("milestone_event")]
+        expected_milestones = [
+            execution_pb2.MILESTONE_ACCEPTED,
+            execution_pb2.MILESTONE_COMPILING,
+            execution_pb2.MILESTONE_RUNNING,
+            execution_pb2.MILESTONE_COMPLETED,
+        ]
+        self.assertEqual(milestone_events, expected_milestones)
+
+        # Final event is the result
+        self.assertTrue(events[-1].HasField("result"))
+        result = events[-1].result
+        self.assertEqual(result.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout, "hello c stream\n")
+
+    async def test_execute_stream_compile_error_bash(self) -> None:
+        syntax_err = "/workspace/solution.sh: line 1: syntax error near unexpected token `then'"
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 2, 0, 10, 5, 1024, "", syntax_err)
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-stream-bash-err",
+            language_id="bash",
+            source_code="if then\n",
+        )
+
+        events = []
+        async for progress in self.stub.ExecuteStream(req):
+            events.append(progress)
+
+        milestone_events = [e.milestone_event.milestone for e in events if e.HasField("milestone_event")]
+        expected_milestones = [
+            execution_pb2.MILESTONE_ACCEPTED,
+            execution_pb2.MILESTONE_COMPILING,
+            execution_pb2.MILESTONE_COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_events, expected_milestones)
+
+        self.assertTrue(events[-1].HasField("result"))
+        result = events[-1].result
+        self.assertEqual(result.final_status, execution_pb2.MILESTONE_COMPILE_ERROR)
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("syntax error near unexpected token `then'", result.compile_output)
+
+    async def test_execute_uninstalled_toolchain(self) -> None:
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-uninstalled",
+            language_id="go",
+            source_code="package main\n",
+        )
+        resp = await self.stub.ExecuteSync(req)
+
+        self.assertEqual(resp.final_status, execution_pb2.MILESTONE_SANDBOX_ERROR)
+        self.assertIn("Toolchain for 'go' is not installed", resp.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
