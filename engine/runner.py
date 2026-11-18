@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 import os
 import re
 import subprocess
+import threading
+import time
 from typing import List, Optional
 
 from engine.models import ResourceLimits, RunnerResult, SeccompPolicyProfile
@@ -26,6 +28,7 @@ class RunnerInterface(ABC):
         limits: ResourceLimits,
         stdin_content: str = "",
         seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE,
+        cancel_token: Optional[threading.Event] = None,
     ) -> RunnerResult:
         pass
 
@@ -45,6 +48,7 @@ class NativeSandboxRunner(RunnerInterface):
         limits: ResourceLimits,
         stdin_content: str = "",
         seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE,
+        cancel_token: Optional[threading.Event] = None,
     ) -> RunnerResult:
         if not os.path.exists(self.runner_path):
             return RunnerResult(
@@ -81,24 +85,12 @@ class NativeSandboxRunner(RunnerInterface):
         cmd.extend(target_argv)
 
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=stdin_content,
-                capture_output=True,
+                stdin=subprocess.PIPE if stdin_content else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=(limits.wall_ms + 5000) / 1000.0,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return RunnerResult(
-                status="TIMEOUT",
-                exit_code=124,
-                signal=9,
-                wall_ms=limits.wall_ms,
-                cpu_ms=limits.cpu_ms,
-                peak_memory_kb=0,
-                stdout="",
-                stderr="Host execution timeout waiting for pes2-runner",
             )
         except Exception as exc:
             return RunnerResult(
@@ -112,8 +104,48 @@ class NativeSandboxRunner(RunnerInterface):
                 stderr=f"Supervisor invocation failure: {exc}",
             )
 
+        stdout_data = ""
+        stderr_data = ""
+
+        def reader():
+            nonlocal stdout_data, stderr_data
+            stdout_data, stderr_data = proc.communicate(input=stdin_content if stdin_content else None)
+
+        read_thread = threading.Thread(target=reader, daemon=True)
+        read_thread.start()
+
+        poll_interval = 0.05
+        deadline = time.time() + ((limits.wall_ms + 5000) / 1000.0)
+        was_cancelled = False
+        was_timeout = False
+
+        while read_thread.is_alive():
+            if cancel_token and cancel_token.is_set():
+                was_cancelled = True
+                try:
+                    proc.terminate()  # Sends SIGTERM to pes2-runner
+                except ProcessLookupError:
+                    pass
+                break
+            if time.time() > deadline:
+                was_timeout = True
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                break
+            time.sleep(poll_interval)
+
+        read_thread.join(timeout=2.0)
+        if read_thread.is_alive():
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            read_thread.join(timeout=1.0)
+
         # Parse PES2_RESULT metadata from stderr
-        match = PES2_RESULT_PATTERN.search(proc.stderr)
+        match = PES2_RESULT_PATTERN.search(stderr_data)
         if match:
             status = match.group(1)
             exit_code = int(match.group(2))
@@ -121,8 +153,7 @@ class NativeSandboxRunner(RunnerInterface):
             wall_ms = int(match.group(4))
             cpu_ms = int(match.group(5))
             peak_memory_kb = int(match.group(6))
-            # Clean PES2_RESULT line from clean stderr report
-            cleaned_stderr = PES2_RESULT_PATTERN.sub("", proc.stderr).strip()
+            cleaned_stderr = PES2_RESULT_PATTERN.sub("", stderr_data).strip()
             return RunnerResult(
                 status=status,
                 exit_code=exit_code,
@@ -130,19 +161,43 @@ class NativeSandboxRunner(RunnerInterface):
                 wall_ms=wall_ms,
                 cpu_ms=cpu_ms,
                 peak_memory_kb=peak_memory_kb,
-                stdout=proc.stdout,
+                stdout=stdout_data,
                 stderr=cleaned_stderr,
+            )
+
+        if was_cancelled:
+            return RunnerResult(
+                status="CANCELLED",
+                exit_code=130,
+                signal=15,
+                wall_ms=0,
+                cpu_ms=0,
+                peak_memory_kb=0,
+                stdout=stdout_data,
+                stderr=stderr_data or "Process cancelled by client signal",
+            )
+
+        if was_timeout:
+            return RunnerResult(
+                status="TIMEOUT",
+                exit_code=124,
+                signal=9,
+                wall_ms=limits.wall_ms,
+                cpu_ms=limits.cpu_ms,
+                peak_memory_kb=0,
+                stdout=stdout_data,
+                stderr=stderr_data or "Host execution timeout waiting for pes2-runner",
             )
 
         return RunnerResult(
             status="SANDBOX_ERROR" if proc.returncode != 0 else "OK",
-            exit_code=proc.returncode,
+            exit_code=proc.returncode if proc.returncode is not None else 1,
             signal=0,
             wall_ms=0,
             cpu_ms=0,
             peak_memory_kb=0,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            stdout=stdout_data,
+            stderr=stderr_data,
         )
 
 
@@ -153,6 +208,7 @@ class MockSandboxRunner(RunnerInterface):
         self.invocations: List[dict] = []
         self._next_result: Optional[RunnerResult] = None
         self._results_queue: List[RunnerResult] = []
+        self.run_delay: float = 0.0
 
     def set_next_result(self, result: RunnerResult) -> None:
         self._next_result = result
@@ -168,6 +224,7 @@ class MockSandboxRunner(RunnerInterface):
         limits: ResourceLimits,
         stdin_content: str = "",
         seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE,
+        cancel_token: Optional[threading.Event] = None,
     ) -> RunnerResult:
         self.invocations.append({
             "workspace": workspace,
@@ -177,6 +234,37 @@ class MockSandboxRunner(RunnerInterface):
             "stdin_content": stdin_content,
             "seccomp_profile": seccomp_profile,
         })
+
+        if cancel_token and cancel_token.is_set():
+            return RunnerResult(
+                status="CANCELLED",
+                exit_code=130,
+                signal=15,
+                wall_ms=0,
+                cpu_ms=0,
+                peak_memory_kb=0,
+                stdout="",
+                stderr="Execution cancelled",
+            )
+
+        if self.run_delay > 0:
+            step = 0.05
+            elapsed = 0.0
+            while elapsed < self.run_delay:
+                if cancel_token and cancel_token.is_set():
+                    return RunnerResult(
+                        status="CANCELLED",
+                        exit_code=130,
+                        signal=15,
+                        wall_ms=int(elapsed * 1000),
+                        cpu_ms=0,
+                        peak_memory_kb=0,
+                        stdout="",
+                        stderr="Execution cancelled while running",
+                    )
+                time.sleep(step)
+                elapsed += step
+
         if self._results_queue:
             return self._results_queue.pop(0)
         if self._next_result is not None:
