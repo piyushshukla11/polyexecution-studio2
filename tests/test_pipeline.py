@@ -11,6 +11,7 @@ from engine.models import (
     Milestone,
     ResourceLimits,
     RunnerResult,
+    SeccompPolicyProfile,
 )
 from engine.pipeline import ExecutionPipeline
 from engine.registry import RuntimeRegistry
@@ -20,8 +21,8 @@ from engine.runner import MockSandboxRunner
 class ArtifactCreatingMockRunner(MockSandboxRunner):
     """Simulates realistic compiler behavior by producing output artifact on compile success."""
 
-    def run(self, workspace, target_bin, target_argv, limits, stdin_content=""):
-        res = super().run(workspace, target_bin, target_argv, limits, stdin_content)
+    def run(self, workspace, target_bin, target_argv, limits, stdin_content="", **kwargs):
+        res = super().run(workspace, target_bin, target_argv, limits, stdin_content, **kwargs)
         # If compilation succeeded, create the expected output binary
         if res.status == "OK" and res.exit_code == 0:
             if target_bin.endswith("gcc") or target_bin.endswith("clang++") or target_bin.endswith("g++"):
@@ -69,8 +70,10 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(len(self.runner.invocations), 2)
         # Stage 1: compiler bin
         self.assertTrue(self.runner.invocations[0]["target_bin"].endswith("gcc"))
+        self.assertEqual(self.runner.invocations[0]["seccomp_profile"], SeccompPolicyProfile.COMPILER)
         # Stage 2: artifact bin
         self.assertEqual(self.runner.invocations[1]["target_bin"], "/workspace/a.out")
+        self.assertEqual(self.runner.invocations[1]["seccomp_profile"], SeccompPolicyProfile.STRICT_NATIVE)
 
     def test_c_compile_success_without_artifact_fails_closed(self) -> None:
         # Compiler exits 0 with status OK, but produces no artifact
@@ -135,14 +138,14 @@ class TestExecutionPipeline(unittest.TestCase):
     def test_stale_artifact_defense(self) -> None:
         # Pre-plant a fake artifact before compile
         class StaleArtifactPlantingRunner(MockSandboxRunner):
-            def run(self, workspace, target_bin, target_argv, limits, stdin_content=""):
+            def run(self, workspace, target_bin, target_argv, limits, stdin_content="", **kwargs):
                 # Simulate a malicious or leftover a.out artifact in workspace
                 fake_bin = os.path.join(workspace, "a.out")
                 with open(fake_bin, "w") as f:
                     f.write("echo 'malicious stale execution'\n")
                 os.chmod(fake_bin, 0o755)
                 # But compile fails!
-                return super().run(workspace, target_bin, target_argv, limits, stdin_content)
+                return super().run(workspace, target_bin, target_argv, limits, stdin_content, **kwargs)
 
         planting_runner = StaleArtifactPlantingRunner()
         planting_runner.queue_result(
@@ -191,6 +194,56 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertNotIn(Milestone.COMPILING, milestone_names)
         self.assertEqual(len(self.runner.invocations), 1)
         self.assertTrue(self.runner.invocations[0]["target_bin"].endswith("python3"))
+        self.assertEqual(self.runner.invocations[0]["seccomp_profile"], SeccompPolicyProfile.PYTHON)
+
+    def test_compile_stage_timeout_truthful_status(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("TIMEOUT", 124, 9, 5000, 5000, 32768, "", "Compiler exceeded timeout\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-compile-timeout",
+            language_id=LanguageId.C,
+            source_code="#include <stdio.h>\nint main() { return 0; }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        # Must truthfully propagate TIMEOUT, not conflate as COMPILE_ERROR
+        self.assertEqual(res.final_status, Milestone.TIMEOUT)
+        milestone_names = [m.milestone for m in res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.COMPILING, Milestone.TIMEOUT])
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
+
+    def test_compile_stage_memory_limit_truthful_status(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("MEMORY_LIMIT", 137, 9, 200, 150, 262144, "", "Compiler killed by cgroup OOM\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-compile-oom",
+            language_id=LanguageId.C,
+            source_code="#include <stdio.h>\nint main() { return 0; }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
+        milestone_names = [m.milestone for m in res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.COMPILING, Milestone.MEMORY_LIMIT])
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
+
+    def test_compile_stage_policy_block_truthful_status(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("BLOCKED_BY_POLICY", 159, 31, 50, 20, 16384, "", "Syscall blocked by seccomp\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-compile-policy",
+            language_id=LanguageId.C,
+            source_code="#include <stdio.h>\nint main() { return 0; }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.BLOCKED_BY_POLICY)
+        milestone_names = [m.milestone for m in res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.COMPILING, Milestone.BLOCKED_BY_POLICY])
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
 
     def test_python3_runtime_error(self) -> None:
         self.runner.queue_result(

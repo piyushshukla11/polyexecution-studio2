@@ -151,18 +151,31 @@ class ExecutionPipeline:
                     target_argv=adapter.compile_spec.compile_args,
                     limits=adapter.compile_spec.compile_resource_limits,
                     stdin_content="",
+                    seccomp_profile=adapter.compile_spec.seccomp_profile,
                 )
 
-                # Check if compilation failed (nonzero exit, non-OK status, or missing output artifact)
+                # Check if compilation failed
                 compile_failed = False
-                if compile_res.status != "OK" or compile_res.exit_code != 0:
+                compile_milestone = Milestone.COMPILE_ERROR
+                compile_output = None
+
+                if compile_res.status == "OK" and compile_res.exit_code == 0:
+                    if not os.path.exists(artifact_path):
+                        compile_failed = True
+                        compile_milestone = Milestone.COMPILE_ERROR
+                        compile_output = (compile_res.stderr or compile_res.stdout).strip()
+                        if not compile_output:
+                            compile_output = f"Compiler exited successfully but produced no artifact at {artifact_rel}"
+                elif compile_res.status == "RUNTIME_ERROR":
+                    # Actual compiler diagnostic (syntax error, linker error, non-zero exit)
                     compile_failed = True
+                    compile_milestone = Milestone.COMPILE_ERROR
                     compile_output = (compile_res.stderr or compile_res.stdout).strip()
-                elif not os.path.exists(artifact_path):
+                else:
+                    # Sandbox outcome: TIMEOUT, MEMORY_LIMIT, OUTPUT_LIMIT, BLOCKED_BY_POLICY, SANDBOX_ERROR, CANCELLED
                     compile_failed = True
+                    compile_milestone = map_runner_status(compile_res.status)
                     compile_output = (compile_res.stderr or compile_res.stdout).strip()
-                    if not compile_output:
-                        compile_output = f"Compiler exited successfully but produced no artifact at {artifact_rel}"
 
                 if compile_failed:
                     # Stale artifact defense: guarantee any partial artifact is purged
@@ -173,12 +186,12 @@ class ExecutionPipeline:
                             pass
 
                     milestones.append(
-                        MilestoneEvent(Milestone.COMPILE_ERROR, current_time_ms(), "Compilation failed")
+                        MilestoneEvent(compile_milestone, current_time_ms(), f"Compilation stopped: {compile_milestone.value}")
                     )
                     return ExecutionResult(
                         request_id=request.request_id,
                         language_id=request.language_id,
-                        final_status=Milestone.COMPILE_ERROR,
+                        final_status=compile_milestone,
                         milestones=milestones,
                         exit_code=compile_res.exit_code if compile_res.exit_code != 0 else 1,
                         signal=compile_res.signal,
@@ -200,6 +213,7 @@ class ExecutionPipeline:
                 target_argv=adapter.execution_spec.execution_args,
                 limits=exec_limits,
                 stdin_content=request.stdin,
+                seccomp_profile=adapter.execution_spec.seccomp_profile,
             )
 
             stdout = exec_res.stdout

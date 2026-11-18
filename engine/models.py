@@ -59,9 +59,11 @@ class Milestone(str, Enum):
 
 
 class SeccompPolicyProfile(str, Enum):
-    STRICT_NATIVE = "STRICT_NATIVE"
-    JVM_PERMISSIVE = "JVM_PERMISSIVE"
-    V8_NODE = "V8_NODE"
+    STRICT_NATIVE = "strict"
+    COMPILER = "compiler"
+    PYTHON = "python"
+    JVM_PERMISSIVE = "jvm_permissive"
+    V8_NODE = "v8_node"
 
 
 MAX_SOURCE_BYTES: int = 65536
@@ -98,6 +100,7 @@ class CompileSpec:
             max_output_bytes=65536,
         )
     )
+    seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.COMPILER
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,7 @@ class ExecutionSpec:
     runner_bin: str
     execution_args: List[str] = field(default_factory=list)
     default_resource_limits: ResourceLimits = field(default_factory=ResourceLimits)
+    seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE
 
 
 @dataclass(frozen=True)

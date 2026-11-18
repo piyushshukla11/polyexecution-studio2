@@ -6,7 +6,7 @@ import re
 import subprocess
 from typing import List, Optional
 
-from engine.models import ResourceLimits, RunnerResult
+from engine.models import ResourceLimits, RunnerResult, SeccompPolicyProfile
 
 
 PES2_RESULT_PATTERN = re.compile(
@@ -25,6 +25,7 @@ class RunnerInterface(ABC):
         target_argv: List[str],
         limits: ResourceLimits,
         stdin_content: str = "",
+        seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE,
     ) -> RunnerResult:
         pass
 
@@ -43,6 +44,7 @@ class NativeSandboxRunner(RunnerInterface):
         target_argv: List[str],
         limits: ResourceLimits,
         stdin_content: str = "",
+        seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE,
     ) -> RunnerResult:
         if not os.path.exists(self.runner_path):
             return RunnerResult(
@@ -68,6 +70,8 @@ class NativeSandboxRunner(RunnerInterface):
             str(limits.memory_kb),
             "--pids",
             str(limits.pids),
+            "--seccomp-profile",
+            seccomp_profile.value,
         ]
         if self.cgroup_root:
             cmd.extend(["--cgroup-root", self.cgroup_root])
@@ -163,6 +167,7 @@ class MockSandboxRunner(RunnerInterface):
         target_argv: List[str],
         limits: ResourceLimits,
         stdin_content: str = "",
+        seccomp_profile: SeccompPolicyProfile = SeccompPolicyProfile.STRICT_NATIVE,
     ) -> RunnerResult:
         self.invocations.append({
             "workspace": workspace,
@@ -170,6 +175,7 @@ class MockSandboxRunner(RunnerInterface):
             "target_argv": list(target_argv),
             "limits": limits,
             "stdin_content": stdin_content,
+            "seccomp_profile": seccomp_profile,
         })
         if self._results_queue:
             return self._results_queue.pop(0)
