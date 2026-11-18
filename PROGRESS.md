@@ -688,3 +688,45 @@ Rules: Append-only. Never edit or delete existing entries. Real IST timestamps.
 - Linked: LOG-0033.
 - Status: Swap check fail-closed hardening and process creation seccomp documentation/tests resolved on `phase/2-runtime-adapters`. Requesting Tutor review before any merge.
 - Tutor review: pending
+
+
+## [LOG-0035] 2026-11-18 09:40 IST | PLAN | actor: agent
+- Goal: Prevent child process / zombie leakage in `action_strict_fork_permitted()` by configuring automatic kernel child reaping (`SIGCHLD` set to `SIG_IGN` with `SA_NOCLDWAIT`) and synchronizing child exit via pipe; verify zero stray or zombie processes remain after running `make -C sandbox test-runtime`.
+- Reason: In `sandbox/tests/test_seccomp.c`, `action_strict_fork_permitted()` forks a child process to test that `fork()` is permitted under `SECCOMP_PROFILE_STRICT`. Because `SECCOMP_PROFILE_STRICT` omits `wait4()`, the parent could not wait on the child, creating a window for a short-lived zombie or orphan process. Setting `SIGCHLD` to `SIG_IGN` with `SA_NOCLDWAIT` prior to installing the seccomp profile instructs the kernel to automatically reap the child immediately upon exit, and pipe synchronization guarantees the child has terminated before the test parent exits.
+- Steps:
+  1. In `sandbox/tests/test_seccomp.c`:
+     - In `action_strict_fork_permitted()`:
+       - Set `SIGCHLD` handler to `SIG_IGN` with `SA_NOCLDWAIT` using `sigaction`.
+       - Open a pipe via `pipe2(pfd, O_CLOEXEC)`.
+       - In the child: write 1 byte to the pipe, close the write end, and `_exit(0)`.
+       - In the parent: read 1 byte from the pipe, close the read end, and `_exit(0)`.
+  2. Rebuild sandbox and run `make -C sandbox test`.
+  3. Run `PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime` under the delegated cgroup root.
+  4. Verify that zero stray processes or zombies remain via `ps`.
+  5. Run Python unit suite (39/39).
+  6. Append linked `DONE` entry `LOG-0036`.
+- Files: PROGRESS.md, sandbox/tests/test_seccomp.c.
+- Linked: LOG-0034.
+- Expected: All seccomp unit tests and runtime isolation tests pass cleanly with zero lingering processes or zombies.
+- Tutor review: pending
+
+
+## [LOG-0036] 2026-11-18 09:49 IST | DONE | actor: agent
+- Goal: Prevent child process / zombie leakage in `action_strict_fork_permitted()` by configuring automatic kernel child reaping (`SIGCHLD` set to `SIG_IGN` with `SA_NOCLDWAIT`) and synchronizing child exit via pipe; verify zero stray or zombie processes remain after running `make -C sandbox test-runtime`.
+- Outcome:
+  1. In `sandbox/tests/test_seccomp.c`:
+     - Refactored `action_strict_fork_permitted()` to configure `SIGCHLD` with `SIG_IGN` and `SA_NOCLDWAIT` prior to loading `SECCOMP_PROFILE_STRICT`, ensuring the Linux kernel reaps any terminated child immediately without requiring `wait4()`.
+     - Added an isolated pipe synchronization handshake: child writes 1 byte on completion and exits; parent blocks on pipe read until the child finishes, ensuring the child process lifecycle terminates cleanly before the test function returns.
+  2. Verification:
+     - `make -C sandbox test`: passed cleanly (12/12 seccomp unit checks, 5/5 cgroup discovery checks).
+     - `PES2_REQUIRE_RUNTIME=1 make -C sandbox test-runtime`: passed 10/10 strict runtime fixtures against delegated cgroup `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice`.
+     - Stray process check (`ps aux | grep -E "test_seccomp|pes2-runner|defunct" | grep -v grep`): confirmed zero stray, orphaned, or zombie processes.
+     - `python3 -m unittest discover -s tests -p "test_*.py" -v`: 39/39 tests passed in 1.136s.
+     - `bash scripts/test_append_only.sh`: 7/7 passed.
+     - `bash scripts/check_progress_append_only.sh`: passed.
+     - `bash scripts/check_repo_hygiene.sh`: passed.
+     - `git diff --check`: clean.
+- Files: `PROGRESS.md`, `sandbox/tests/test_seccomp.c`.
+- Linked: LOG-0035.
+- Status: Test process lifecycle hygiene resolved; Phase 2 ready for merge review.
+- Tutor review: pending
