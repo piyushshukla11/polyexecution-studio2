@@ -71,7 +71,7 @@ class ExecutionPipeline:
                 stderr=f"Source code size ({len(source_bytes)} bytes) exceeds maximum allowed limit ({MAX_SOURCE_BYTES} bytes)",
             )
 
-        # Pre-check 2: Adapter existence
+        # Pre-check 2: Adapter existence and installation
         adapter = self.registry.get(request.language_id)
         if adapter is None:
             now = current_time_ms()
@@ -87,6 +87,28 @@ class ExecutionPipeline:
                 peak_memory_kb=0,
                 stdout="",
                 stderr=f"Runtime adapter for '{request.language_id.value}' not found in registry",
+            )
+
+        if not adapter.is_installed:
+            now = current_time_ms()
+            return ExecutionResult(
+                request_id=request.request_id,
+                language_id=request.language_id,
+                final_status=Milestone.SANDBOX_ERROR,
+                milestones=[
+                    MilestoneEvent(
+                        Milestone.SANDBOX_ERROR,
+                        now,
+                        f"Language '{request.language_id.value}' not installed on host: {adapter.installed_version}",
+                    )
+                ],
+                exit_code=1,
+                signal=0,
+                wall_ms=0,
+                cpu_ms=0,
+                peak_memory_kb=0,
+                stdout="",
+                stderr=f"Toolchain for '{request.language_id.value}' is not installed on this host ({adapter.installed_version})",
             )
 
         # Pre-check 3: Validate requested custom limits against runner capabilities
@@ -126,8 +148,7 @@ class ExecutionPipeline:
                 source_rel = adapter.compile_spec.source_filename
                 artifact_rel = adapter.compile_spec.artifact_output_name
             else:
-                # Python or interpreted single-stage
-                source_rel = "solution.py"
+                source_rel = adapter.execution_spec.source_filename or "solution.py"
                 artifact_rel = None
 
             source_path = os.path.join(workspace, source_rel)
@@ -136,11 +157,12 @@ class ExecutionPipeline:
 
             compile_output: Optional[str] = None
 
-            # Stage 1: Compile if CompileSpec present (e.g. C, C++)
+            # Stage 1: Compile if CompileSpec present (e.g. C, C++, or Bash syntax validation)
             if adapter.compile_spec:
-                artifact_path = os.path.join(workspace, artifact_rel)
+                artifact_path = os.path.join(workspace, artifact_rel) if artifact_rel else None
                 # Stale artifact defense: ensure destination binary does not exist
-                if os.path.exists(artifact_path):
+                # (Skipped when artifact_rel == source_rel, which occurs in syntax validation passes)
+                if artifact_path and artifact_rel != source_rel and os.path.exists(artifact_path):
                     os.remove(artifact_path)
 
                 milestones.append(MilestoneEvent(Milestone.COMPILING, current_time_ms(), "Compilation initiated"))
@@ -160,7 +182,7 @@ class ExecutionPipeline:
                 compile_output = None
 
                 if compile_res.status == "OK" and compile_res.exit_code == 0:
-                    if not os.path.exists(artifact_path):
+                    if artifact_path and not os.path.exists(artifact_path):
                         compile_failed = True
                         compile_milestone = Milestone.COMPILE_ERROR
                         compile_output = (compile_res.stderr or compile_res.stdout).strip()
@@ -178,8 +200,8 @@ class ExecutionPipeline:
                     compile_output = (compile_res.stderr or compile_res.stdout).strip()
 
                 if compile_failed:
-                    # Stale artifact defense: guarantee any partial artifact is purged
-                    if os.path.exists(artifact_path):
+                    # Stale artifact defense: guarantee any partial artifact is purged if distinct from source
+                    if artifact_path and artifact_rel != source_rel and os.path.exists(artifact_path):
                         try:
                             os.remove(artifact_path)
                         except OSError:
