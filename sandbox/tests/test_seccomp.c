@@ -19,6 +19,7 @@
 #include <sys/syscall.h>
 #include <sys/timerfd.h>
 #include <time.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -762,6 +763,130 @@ static void action_dart_capset_blocked(void) {
     struct __user_cap_data_struct data[2];
     memset(data, 0, sizeof(data));
     syscall(SYS_capset, &hdr, data);
+}
+
+static void action_racket_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_racket_epoll_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create, 1);
+    if (epfd < 0) _exit(3);
+    close(epfd);
+}
+
+static void action_racket_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    close(epfd);
+}
+
+static void action_racket_epoll_ctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    int p[2];
+    if (pipe(p) != 0) { close(epfd); _exit(3); }
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = p[0];
+    int rc = (int)syscall(SYS_epoll_ctl, epfd, EPOLL_CTL_ADD, p[0], &ev);
+    close(p[0]); close(p[1]); close(epfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_racket_epoll_wait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_wait, epfd, &ev, 1, 0);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_racket_epoll_pwait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_pwait, epfd, &ev, 1, 0, NULL);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_racket_epoll_pwait2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    struct timespec ts = {0, 0};
+#ifdef SYS_epoll_pwait2
+    int nfds = (int)syscall(SYS_epoll_pwait2, epfd, &ev, 1, &ts, NULL);
+    close(epfd);
+    if (nfds < 0 && errno != ENOSYS) _exit(4);
+#else
+    close(epfd);
+#endif
+}
+
+static void action_racket_poll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    int p[2];
+    if (pipe(p) != 0) _exit(3);
+    struct pollfd pfd = {.fd = p[0], .events = POLLIN, .revents = 0};
+    int rc = poll(&pfd, 1, 0);
+    close(p[0]); close(p[1]);
+    if (rc < 0) _exit(4);
+}
+
+static void action_racket_prctl_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "racket-worker") != 0) _exit(3);
+}
+
+static void action_racket_prctl_get_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    char name[16];
+    if (prctl(PR_GET_NAME, name) != 0) _exit(3);
+}
+
+static void action_racket_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_racket_socket_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static void action_racket_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_racket_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
+static void action_racket_capset_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
+}
+
+static void action_racket_sched_setscheduler_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RACKET) != 0) _exit(2);
+    struct sched_param param = {0};
+    sched_setscheduler(0, SCHED_FIFO, &param);
 }
 
 int main(void) {
@@ -1537,9 +1662,137 @@ int main(void) {
         return 1;
     }
 
+    /* Test 97: sched_getaffinity permitted under Racket profile */
+    if (expect_success(action_racket_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 98: epoll_create permitted under Racket profile */
+    if (expect_success(action_racket_epoll_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits epoll_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on epoll_create!\n");
+        return 1;
+    }
+
+    /* Test 99: epoll_create1 permitted under Racket profile */
+    if (expect_success(action_racket_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 100: epoll_ctl permitted under Racket profile */
+    if (expect_success(action_racket_epoll_ctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits epoll_ctl without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on epoll_ctl!\n");
+        return 1;
+    }
+
+    /* Test 101: epoll_wait permitted under Racket profile */
+    if (expect_success(action_racket_epoll_wait)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits epoll_wait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on epoll_wait!\n");
+        return 1;
+    }
+
+    /* Test 102: epoll_pwait permitted under Racket profile */
+    if (expect_success(action_racket_epoll_pwait)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits epoll_pwait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on epoll_pwait!\n");
+        return 1;
+    }
+
+    /* Test 103: epoll_pwait2 permitted under Racket profile */
+    if (expect_success(action_racket_epoll_pwait2)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits epoll_pwait2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on epoll_pwait2!\n");
+        return 1;
+    }
+
+    /* Test 104: poll permitted under Racket profile */
+    if (expect_success(action_racket_poll)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits poll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on poll!\n");
+        return 1;
+    }
+
+    /* Test 105: prctl(PR_SET_NAME) permitted under Racket profile */
+    if (expect_success(action_racket_prctl_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 106: prctl(PR_GET_NAME) permitted under Racket profile */
+    if (expect_success(action_racket_prctl_get_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET permits prctl(PR_GET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET failed on prctl(PR_GET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 107: prctl(PR_SET_DUMPABLE) blocked with SIGSYS under Racket profile */
+    if (expect_sigsys(action_racket_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 108: socket() blocked with SIGSYS under Racket profile */
+    if (expect_sigsys(action_racket_socket_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET kills socket() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET permitted socket()!\n");
+        return 1;
+    }
+
+    /* Test 109: CLONE_NEWUSER blocked with SIGSYS under Racket profile */
+    if (expect_sigsys(action_racket_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 110: unshare blocked with SIGSYS under Racket profile */
+    if (expect_sigsys(action_racket_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET permitted unshare()!\n");
+        return 1;
+    }
+
+    /* Test 111: capset blocked with SIGSYS under Racket profile */
+    if (expect_sigsys(action_racket_capset_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET permitted capset()!\n");
+        return 1;
+    }
+
+    /* Test 112: sched_setscheduler blocked with SIGSYS under Racket profile */
+    if (expect_sigsys(action_racket_sched_setscheduler_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RACKET kills sched_setscheduler() with SIGSYS (scheduler changes denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RACKET permitted sched_setscheduler()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 96 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 112 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

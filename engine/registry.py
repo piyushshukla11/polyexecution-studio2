@@ -503,6 +503,33 @@ class RuntimeRegistry:
         )
         self.register(dart_adapter)
 
+        # Racket runtime (Phase 5 Slice 6)
+        racket_bin = "/usr/bin/racket" if os.path.exists("/usr/bin/racket") else shutil.which("racket") or "/usr/bin/racket"
+        racket_adapter = RuntimeAdapter(
+            id=LanguageId.RACKET,
+            display_name="Racket",
+            official_version="Racket CS 9.3",
+            installed_version=detect_tool_version(racket_bin),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=racket_bin,
+                execution_args=["/workspace/Solution.rkt"],
+                source_filename="Solution.rkt",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=10000,
+                    cpu_ms=5000,
+                    memory_kb=196608,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.RACKET,
+            ),
+            seccomp_policy=SeccompPolicyProfile.RACKET,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(racket_adapter)
+
         # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         py2_adapter = RuntimeAdapter(
@@ -540,24 +567,6 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(swift_adapter)
-
-        racket_adapter = RuntimeAdapter(
-            id=LanguageId.RACKET,
-            display_name="Racket",
-            official_version="Racket 8.x",
-            installed_version=detect_tool_version("/usr/bin/racket"),
-            family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/racket",
-                execution_args=[],
-                source_filename="solution.rkt",
-                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
-            ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
-            cleanup_spec=CleanupSpec(),
-        )
-        self.register(racket_adapter)
 
         erlang_adapter = RuntimeAdapter(
             id=LanguageId.ERLANG,

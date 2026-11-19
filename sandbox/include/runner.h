@@ -57,7 +57,8 @@ typedef enum {
     SECCOMP_PROFILE_RUBY = 5,
     SECCOMP_PROFILE_NODE = 6,
     SECCOMP_PROFILE_PHP = 7,
-    SECCOMP_PROFILE_DART = 8
+    SECCOMP_PROFILE_DART = 8,
+    SECCOMP_PROFILE_RACKET = 9
 } seccomp_profile_t;
 
 typedef struct {
