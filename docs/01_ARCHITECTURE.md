@@ -123,6 +123,11 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Default sandbox `clone` handling (no namespace flags) is preserved; `clone3` returns `ENOSYS`.
    - Memory bounded under a verified 64 MiB cgroup memory limit (`65536 KiB`), safely bounding the ~24.8 MiB baseline RSS without false OOM kills.
    - Strict network denial (`socket`, `connect`, etc.), scheduler denial (`sched_setparam`, `sched_setscheduler`, `setpriority`, `nice`), and namespace isolation (`clone` namespace flags, `unshare`) remain fully enforced.
+6. **TypeScript 2-Stage Transpilation & Node Execution:**
+   - 2-stage execution: compiles `/workspace/Solution.ts` to `/workspace/Solution.js` via `/usr/bin/env NODE_DISABLE_COMPILE_CACHE=1 /usr/bin/tsc --target ES2022 --module CommonJS /workspace/Solution.ts`, followed by execution via `/usr/bin/node /workspace/Solution.js`.
+   - Reuses existing `SECCOMP_PROFILE_NODE` without profile widening or Tier A modifications.
+   - Passing `NODE_DISABLE_COMPILE_CACHE=1` avoids Node.js compile cache directory creation (`mkdir` on `/tmp/node-compile-cache`), enabling clean compilation under default-deny seccomp policies while preserving strict directory creation protections.
+   - Bounded under a measured 256 MiB cgroup limit for compilation (~214 MiB peak) and 128 MiB for execution.
 
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:

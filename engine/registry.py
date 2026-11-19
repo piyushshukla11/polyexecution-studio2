@@ -434,25 +434,49 @@ class RuntimeRegistry:
         )
         self.register(php_adapter)
 
-        # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
-
+        # TypeScript runtime (Phase 5 Slice 4)
+        tsc_bin = "/usr/bin/tsc" if os.path.exists("/usr/bin/tsc") else shutil.which("tsc") or "/usr/bin/tsc"
+        env_bin = "/usr/bin/env" if os.path.exists("/usr/bin/env") else shutil.which("env") or "/usr/bin/env"
+        node_bin = "/usr/bin/node" if os.path.exists("/usr/bin/node") else shutil.which("node") or "/usr/bin/node"
         ts_adapter = RuntimeAdapter(
             id=LanguageId.TYPESCRIPT,
             display_name="TypeScript",
-            official_version="TypeScript 5.x",
-            installed_version=detect_tool_version("/usr/bin/tsc"),
+            official_version="TypeScript 6.0 (tsc)",
+            installed_version=detect_tool_version(tsc_bin),
             family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/tsc",
-                execution_args=[],
-                source_filename="solution.ts",
-                seccomp_profile=SeccompPolicyProfile.V8_NODE,
+            compile_spec=CompileSpec(
+                compiler_bin=env_bin,
+                compile_args=["NODE_DISABLE_COMPILE_CACHE=1", tsc_bin, "--target", "ES2022", "--module", "CommonJS", "/workspace/Solution.ts"],
+                source_filename="Solution.ts",
+                artifact_output_name="Solution.js",
+                compile_resource_limits=ResourceLimits(
+                    wall_ms=10000,
+                    cpu_ms=5000,
+                    memory_kb=262144,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.NODE,
             ),
-            seccomp_policy=SeccompPolicyProfile.V8_NODE,
+            execution_spec=ExecutionSpec(
+                runner_bin=node_bin,
+                execution_args=["/workspace/Solution.js"],
+                source_filename="Solution.js",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=2000,
+                    memory_kb=131072,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.NODE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.NODE,
             cleanup_spec=CleanupSpec(),
         )
         self.register(ts_adapter)
+
+        # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         py2_adapter = RuntimeAdapter(
             id=LanguageId.PYTHON2,

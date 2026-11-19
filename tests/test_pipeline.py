@@ -34,6 +34,10 @@ class ArtifactCreatingMockRunner(MockSandboxRunner):
                 out_path = os.path.join(workspace, "Solution.class")
                 with open(out_path, "wb") as f:
                     f.write(b"\xca\xfe\xba\xbe")
+            elif any("tsc" in str(arg) for arg in target_argv) or target_bin.endswith("tsc"):
+                out_path = os.path.join(workspace, "Solution.js")
+                with open(out_path, "w") as f:
+                    f.write('"use strict";\n')
         return res
 
 
@@ -830,9 +834,102 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_typescript_success_milestones(self) -> None:
+        # Mock compilation and execution success
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 215000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 30, 20, 16384, "hello typescript pipeline\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-ts-ok",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='const msg: string = "hello typescript pipeline"; console.log(msg);\n',
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello typescript pipeline\n")
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+
+        # Stage 1: Compilation invocation
+        compile_inv = self.runner.invocations[0]
+        self.assertTrue(compile_inv["target_bin"].endswith("env"))
+        self.assertIn("NODE_DISABLE_COMPILE_CACHE=1", compile_inv["target_argv"])
+        self.assertIn("/workspace/Solution.ts", compile_inv["target_argv"])
+        self.assertEqual(compile_inv["seccomp_profile"], SeccompPolicyProfile.NODE)
+        self.assertEqual(compile_inv["limits"].memory_kb, 262144)
+
+        # Stage 2: Execution invocation
+        exec_inv = self.runner.invocations[1]
+        self.assertTrue(exec_inv["target_bin"].endswith("node"))
+        self.assertIn("/workspace/Solution.js", exec_inv["target_argv"])
+        self.assertEqual(exec_inv["seccomp_profile"], SeccompPolicyProfile.NODE)
+        self.assertEqual(exec_inv["limits"].memory_kb, 131072)
+
+    def test_typescript_compile_error_truthful_and_fail_closed(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 2, 0, 1500, 1400, 215000, "", "Solution.ts:1:1 error TS1005: ';' expected.\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-ts-err",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code="const broken: string = ;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(res.exit_code, 2)
+        self.assertIn("error TS1005", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+
+    def test_typescript_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 215000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 30, 20, 16384, "", "TypeError: obj.nonExistentMethod is not a function\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-ts-runtime-err",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code="const obj: any = null; obj.nonExistentMethod();\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("TypeError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+
     def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
         unsupported = [
-            LanguageId.TYPESCRIPT,
             LanguageId.PYTHON2,
             LanguageId.DART,
             LanguageId.SWIFT,
@@ -1188,6 +1285,106 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertIn("PHP-Fiber-Result: fiber-ok", fiber_res.stdout)
 
         # 7. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_typescript_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal TypeScript compilation and execution
+        ok_req = ExecutionRequest(
+            request_id="req-live-ts-ok",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='const greeting: string = "TypeScript Live Execution OK"; console.log(greeting, 20 + 22);\n',
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertEqual(ok_res.stdout.strip(), "TypeScript Live Execution OK 42")
+        milestone_names = [m.milestone for m in ok_res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.COMPILING, Milestone.RUNNING, Milestone.COMPLETED])
+
+        # 2. Type/Syntax error resulting in COMPILE_ERROR with no execution stage
+        type_err_req = ExecutionRequest(
+            request_id="req-live-ts-type-err",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='const x: number = "cannot assign string to number";\n',
+        )
+        type_err_res = pipeline.execute(type_err_req)
+        self.assertEqual(type_err_res.final_status, Milestone.COMPILE_ERROR)
+        self.assertNotEqual(type_err_res.exit_code, 0)
+        diag = (type_err_res.compile_output or "") + type_err_res.stdout + type_err_res.stderr
+        self.assertTrue("TS2322" in diag or "Type 'string' is not assignable" in diag)
+        milestones = [m.milestone for m in type_err_res.milestones]
+        self.assertEqual(milestones, [Milestone.ACCEPTED, Milestone.COMPILING, Milestone.COMPILE_ERROR])
+        self.assertNotIn(Milestone.RUNNING, milestones)
+
+        # 3. JavaScript runtime exception resulting in RUNTIME_ERROR
+        rt_err_req = ExecutionRequest(
+            request_id="req-live-ts-rt-err",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='const obj: any = null;\nobj.triggerRuntimeError();\n',
+        )
+        rt_err_res = pipeline.execute(rt_err_req)
+        self.assertEqual(rt_err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertNotEqual(rt_err_res.exit_code, 0)
+        self.assertIn("TypeError", rt_err_res.stderr)
+        milestones = [m.milestone for m in rt_err_res.milestones]
+        self.assertEqual(milestones, [Milestone.ACCEPTED, Milestone.COMPILING, Milestone.RUNNING, Milestone.RUNTIME_ERROR])
+
+        # 4a. Wall timeout containment (idle process sleeping)
+        wall_timeout_req = ExecutionRequest(
+            request_id="req-live-ts-wall-timeout",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='setTimeout(() => {}, 10000);\n',
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=131072, pids=32, max_output_bytes=65536),
+        )
+        wall_timeout_res = pipeline.execute(wall_timeout_req)
+        self.assertEqual(wall_timeout_res.final_status, Milestone.TIMEOUT)
+
+        # 4b. CPU timeout containment (CPU exhaustion via infinite busy loop)
+        cpu_timeout_req = ExecutionRequest(
+            request_id="req-live-ts-cpu-timeout",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='while (true) {}\n',
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=131072, pids=32, max_output_bytes=65536),
+        )
+        cpu_timeout_res = pipeline.execute(cpu_timeout_req)
+        self.assertEqual(cpu_timeout_res.final_status, Milestone.TIMEOUT)
+        self.assertGreaterEqual(cpu_timeout_res.cpu_ms, 200)
+        self.assertLess(cpu_timeout_res.wall_ms, 4000)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-ts-socket-blocked",
+            language_id=LanguageId.TYPESCRIPT,
+            source_code='declare function require(name: string): any;\nconst http = require("http"); http.get("http://1.1.1.1");\n',
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Verify zero cgroup leftovers
         leftovers = [
             d for d in os.listdir(cgroup_root)
             if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
