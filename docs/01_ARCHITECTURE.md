@@ -111,6 +111,12 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Ruby 3 requires narrow startup syscalls: `sched_getaffinity` for core count detection, `eventfd2` and `epoll_create1`/polling for Fiber scheduling and I/O coordination.
    - Restricts `prctl` operations strictly to `PR_SET_NAME` (thread naming), `PR_SET_THP_DISABLE` (transparent huge page optimization), and `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME` (GC page naming). Any attempt to invoke other `prctl` options (such as `PR_SET_DUMPABLE`) is default-denied and terminates the process with `SIGSYS`.
    - Strict network denial (`socket`, `connect`, etc.) and namespace isolation (`clone` namespace flags, `unshare`) remain fully enforced.
+4. **Node.js Runtime Seccomp Profile (`SECCOMP_PROFILE_NODE`):**
+   - V8 & libuv initialization requires `capget` (read-only process capability query), `sched_getaffinity` (CPU core count awareness for libuv threadpool), `eventfd2` (inter-thread event signaling), and `epoll_create1`/polling for asynchronous event loops.
+   - Returns `ENOSYS` on `io_uring_setup` so libuv's kernel probe cleanly falls back to epoll without crashing the process. Related io_uring syscalls (`io_uring_enter`, `io_uring_register`) remain strictly denied (`SIGSYS`).
+   - Restricts `prctl` operations strictly to `PR_SET_NAME` (thread naming) and `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME` (V8 GC page naming). All other `prctl` options (such as `PR_SET_DUMPABLE`) and `capset` are default-denied and terminate the process with `SIGSYS`.
+   - Bounded under a measured 128 MiB cgroup memory limit, properly distinguishing resident anonymous memory (~50 MiB baseline) from V8's ~1.28 GiB virtual address space pointer compression reservations.
+   - Strict network denial (`socket`, `connect`, etc.) and namespace isolation (`clone` namespace flags, `unshare`) remain fully enforced.
 
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
