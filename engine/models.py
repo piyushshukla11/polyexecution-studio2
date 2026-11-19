@@ -68,6 +68,7 @@ class SeccompPolicyProfile(str, Enum):
     V8_NODE = "node"
     NODE = "node"
     RUBY = "ruby"
+    PHP = "php"
 
 
 MAX_SOURCE_BYTES: int = 65536

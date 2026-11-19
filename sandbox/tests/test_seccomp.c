@@ -570,6 +570,53 @@ static void action_node_unshare_blocked(void) {
     unshare(CLONE_NEWUSER);
 }
 
+static void action_php_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_php_prctl_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "php-cli") != 0) _exit(3);
+}
+
+static void action_php_prctl_vma_anon(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    void *addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) _exit(2);
+    (void)prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (unsigned long)addr, 4096, (unsigned long)"zend_alloc");
+    munmap(addr, 4096);
+}
+
+static void action_php_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_php_socket_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static void action_php_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_php_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
+static void action_php_capset_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_PHP) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
+}
+
 int main(void) {
     printf("========================================================================\n");
     printf("Running Seccomp Profile Isolation & Permitted Syscall Unit Tests\n");
@@ -1135,9 +1182,73 @@ int main(void) {
         return 1;
     }
 
+    /* Test 71: sched_getaffinity permitted under PHP profile */
+    if (expect_success(action_php_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 72: prctl(PR_SET_NAME) permitted under PHP profile */
+    if (expect_success(action_php_prctl_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 73: prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) permitted under PHP profile */
+    if (expect_success(action_php_prctl_vma_anon)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP permits prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP failed on prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 74: prctl(PR_SET_DUMPABLE) blocked with SIGSYS under PHP profile */
+    if (expect_sigsys(action_php_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 75: socket() blocked with SIGSYS under PHP profile */
+    if (expect_sigsys(action_php_socket_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP kills socket() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP permitted socket()!\n");
+        return 1;
+    }
+
+    /* Test 76: CLONE_NEWUSER blocked with SIGSYS under PHP profile */
+    if (expect_sigsys(action_php_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 77: unshare blocked with SIGSYS under PHP profile */
+    if (expect_sigsys(action_php_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP permitted unshare()!\n");
+        return 1;
+    }
+
+    /* Test 78: capset blocked with SIGSYS under PHP profile */
+    if (expect_sigsys(action_php_capset_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_PHP kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_PHP permitted capset()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 70 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 78 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }
