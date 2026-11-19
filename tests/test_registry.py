@@ -213,10 +213,29 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
         self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 131072)
 
+    def test_php_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.PHP)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.display_name, "PHP")
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.PHP)
+        self.assertTrue(adapter.is_installed)
+        self.assertIn("PHP 8.5", adapter.installed_version)
+
+        # Single-stage execution: compile_spec MUST be None to never emit COMPILING
+        self.assertIsNone(adapter.compile_spec)
+
+        # ExecutionSpec verification
+        self.assertTrue(os.path.isabs(adapter.execution_spec.runner_bin))
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.php")
+        self.assertIn("/workspace/Solution.php", adapter.execution_spec.execution_args)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.PHP)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 65536)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
             LanguageId.TYPESCRIPT,
-            LanguageId.PHP,
             LanguageId.PYTHON2,
             LanguageId.DART,
             LanguageId.SWIFT,
@@ -246,7 +265,6 @@ class TestRuntimeRegistry(unittest.TestCase):
 
         for lang_id in [
             LanguageId.TYPESCRIPT,
-            LanguageId.PHP,
             LanguageId.PYTHON2,
             LanguageId.DART,
             LanguageId.SWIFT,

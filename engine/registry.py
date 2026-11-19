@@ -407,6 +407,33 @@ class RuntimeRegistry:
         )
         self.register(js_adapter)
 
+        # PHP runtime (Phase 5 Slice 3)
+        php_bin = "/usr/bin/php" if os.path.exists("/usr/bin/php") else shutil.which("php") or "/usr/bin/php"
+        php_adapter = RuntimeAdapter(
+            id=LanguageId.PHP,
+            display_name="PHP",
+            official_version="PHP 8.5 (cli)",
+            installed_version=detect_tool_version(php_bin),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=php_bin,
+                execution_args=["/workspace/Solution.php"],
+                source_filename="Solution.php",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=2000,
+                    memory_kb=65536,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.PHP,
+            ),
+            seccomp_policy=SeccompPolicyProfile.PHP,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(php_adapter)
+
         # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         ts_adapter = RuntimeAdapter(
@@ -426,24 +453,6 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(ts_adapter)
-
-        php_adapter = RuntimeAdapter(
-            id=LanguageId.PHP,
-            display_name="PHP",
-            official_version="PHP 8.3",
-            installed_version=detect_tool_version("/usr/bin/php"),
-            family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/php",
-                execution_args=["/workspace/solution.php"],
-                source_filename="solution.php",
-                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
-            ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
-            cleanup_spec=CleanupSpec(),
-        )
-        self.register(php_adapter)
 
         py2_adapter = RuntimeAdapter(
             id=LanguageId.PYTHON2,

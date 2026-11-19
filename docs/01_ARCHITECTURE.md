@@ -117,6 +117,12 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Restricts `prctl` operations strictly to `PR_SET_NAME` (thread naming) and `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME` (V8 GC page naming). All other `prctl` options (such as `PR_SET_DUMPABLE`) and `capset` are default-denied and terminate the process with `SIGSYS`.
    - Bounded under a measured 128 MiB cgroup memory limit, properly distinguishing resident anonymous memory (~50 MiB baseline) from V8's ~1.28 GiB virtual address space pointer compression reservations.
    - Strict network denial (`socket`, `connect`, etc.) and namespace isolation (`clone` namespace flags, `unshare`) remain fully enforced.
+5. **PHP Runtime Seccomp Profile (`SECCOMP_PROFILE_PHP`):**
+   - Zend Engine initialization requires `sched_getaffinity` for core count detection.
+   - Restricts `prctl` operations strictly to `PR_SET_NAME` (thread naming) and `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME` (Zend memory manager `zend_alloc` anonymous page naming). Any attempt to invoke other `prctl` options (e.g. `PR_SET_DUMPABLE`) is default-denied and terminates the process with `SIGSYS`.
+   - Default sandbox `clone` handling (no namespace flags) is preserved; `clone3` returns `ENOSYS`.
+   - Memory bounded under a verified 64 MiB cgroup memory limit (`65536 KiB`), safely bounding the ~24.8 MiB baseline RSS without false OOM kills.
+   - Strict network denial (`socket`, `connect`, etc.), scheduler denial (`sched_setparam`, `sched_setscheduler`, `setpriority`, `nice`), and namespace isolation (`clone` namespace flags, `unshare`) remain fully enforced.
 
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
