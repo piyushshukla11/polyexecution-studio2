@@ -261,10 +261,29 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
         self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 131072)
 
+    def test_dart_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.DART)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.runner_bin, "/usr/bin/dart")
+        self.assertEqual(
+            adapter.execution_spec.execution_args,
+            ["--suppress-analytics", "run", "/workspace/Solution.dart"],
+        )
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.dart")
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.DART)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.DART)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 196608)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 10000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 5000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 32)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
             LanguageId.PYTHON2,
-            LanguageId.DART,
             LanguageId.SWIFT,
             LanguageId.RACKET,
             LanguageId.ERLANG,
@@ -292,7 +311,6 @@ class TestRuntimeRegistry(unittest.TestCase):
 
         for lang_id in [
             LanguageId.PYTHON2,
-            LanguageId.DART,
             LanguageId.SWIFT,
             LanguageId.RACKET,
             LanguageId.ERLANG,

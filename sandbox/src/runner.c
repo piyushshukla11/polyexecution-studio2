@@ -112,7 +112,7 @@ static int make_dir(const char *path, mode_t mode) {
 
 static int create_rootfs(const char *rootfs) {
     static const char *const dirs[] = {
-        "usr", "bin", "lib", "lib64", "etc", "etc/java-openjdk", "workspace", "tmp", "dev"
+        "proc", "usr", "bin", "lib", "lib64", "etc", "etc/java-openjdk", "opt", "opt/dart-sdk", "workspace", "tmp", "dev"
     };
     char path[PATH_MAX];
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
@@ -161,8 +161,19 @@ static int setup_mounts(const struct child_context *ctx) {
         if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/etc/java-openjdk", target, 1) != 0) return -1;
     }
 
+    if (access("/opt/dart-sdk", F_OK) == 0) {
+        n = snprintf(target, sizeof(target), "%s/opt/dart-sdk", ctx->rootfs);
+        if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/opt/dart-sdk", target, 1) != 0) return -1;
+    }
+
     n = snprintf(target, sizeof(target), "%s/dev/null", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/dev/null", target, 0) != 0) return -1;
+
+    n = snprintf(target, sizeof(target), "%s/proc", ctx->rootfs);
+    if (n < 0 || (size_t)n >= sizeof(target) ||
+        mount("proc", target, "proc",
+              MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+              "hidepid=2,subset=pid") != 0) return -1;
 
     n = snprintf(target, sizeof(target), "%s/tmp", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target) ||
@@ -185,7 +196,8 @@ static int target_is_allowed(const char *target) {
            strncmp(target, "/usr/", 5) == 0 ||
            strncmp(target, "/bin/", 5) == 0 ||
            strncmp(target, "/lib/", 5) == 0 ||
-           strncmp(target, "/lib64/", 7) == 0;
+           strncmp(target, "/lib64/", 7) == 0 ||
+           strncmp(target, "/opt/dart-sdk/", 14) == 0;
 }
 
 static int apply_child_limits(const runner_config_t *config) {
@@ -707,6 +719,7 @@ int main(int argc, char **argv) {
             else if (strcmp(prof, "ruby") == 0) config.seccomp_profile = SECCOMP_PROFILE_RUBY;
             else if (strcmp(prof, "node") == 0 || strcmp(prof, "v8_node") == 0) config.seccomp_profile = SECCOMP_PROFILE_NODE;
             else if (strcmp(prof, "php") == 0) config.seccomp_profile = SECCOMP_PROFILE_PHP;
+            else if (strcmp(prof, "dart") == 0) config.seccomp_profile = SECCOMP_PROFILE_DART;
             else {
                 fprintf(stderr, "runner: invalid or unsupported seccomp profile '%s'\n", prof);
                 return STATUS_SANDBOX_ERROR;
@@ -736,6 +749,6 @@ int main(int argc, char **argv) {
     return status;
 
 usage:
-    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
     return STATUS_SANDBOX_ERROR;
 }

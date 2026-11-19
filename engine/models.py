@@ -69,6 +69,7 @@ class SeccompPolicyProfile(str, Enum):
     NODE = "node"
     RUBY = "ruby"
     PHP = "php"
+    DART = "dart"
 
 
 MAX_SOURCE_BYTES: int = 65536

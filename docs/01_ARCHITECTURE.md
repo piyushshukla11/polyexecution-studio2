@@ -128,6 +128,14 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Reuses existing `SECCOMP_PROFILE_NODE` without profile widening or Tier A modifications.
    - Passing `NODE_DISABLE_COMPILE_CACHE=1` avoids Node.js compile cache directory creation (`mkdir` on `/tmp/node-compile-cache`), enabling clean compilation under default-deny seccomp policies while preserving strict directory creation protections.
    - Bounded under a measured 256 MiB cgroup limit for compilation (~214 MiB peak) and 128 MiB for execution.
+7. **Dart Runtime Seccomp Profile (`SECCOMP_PROFILE_DART`) & Namespace-Isolated Procfs:**
+   - Single-stage direct execution via `/usr/bin/dart --suppress-analytics run /workspace/Solution.dart`.
+   - Dedicated `SECCOMP_PROFILE_DART` (profile 8) permitting narrow initialization syscalls: `sched_getaffinity` (CPU topology awareness for isolate thread pool), `eventfd2` (inter-thread event messaging), `epoll_create1`/`epoll_ctl`/`epoll_wait`/`epoll_pwait`/`epoll_pwait2` (event loop coordination), and `timerfd_create`/`timerfd_settime`/`timerfd_gettime` (timer threads).
+   - Restricts `prctl` operations strictly to `PR_SET_NAME` (thread naming), `PR_GET_NAME` (thread name inspection), and `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME` (Dart GC heap and isolate page naming). All other `prctl` operations (such as `PR_SET_DUMPABLE`) are denied.
+   - Preserves default sandbox `clone` handling (no namespace flags) and returns `ENOSYS` on `clone3`. Strict default-deny remains enforced for all network calls (`socket`, `connect`, etc.), capabilities (`capset`), and scheduler modifications (`sched_setparam`, `sched_setscheduler`, `setpriority`, `nice`).
+   - Narrowed SDK mount: bind-mounts host `/opt/dart-sdk` into `/opt/dart-sdk` read-only (`MS_RDONLY | MS_NOSUID | MS_NODEV`), with targets restricted under `/opt/dart-sdk/`.
+   - Namespace-isolated procfs mount: glibc `pthread_getattr_np(pthread_self(), &attr)` in `os_thread.cc` reads `/proc/self/maps` to discover stack bounds, and canonicalizes `/proc/self/exe`. To support this without compromising host isolation, procfs is mounted at `<rootfs>/proc` strictly inside the child's `CLONE_NEWPID` namespace with `MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC` and `hidepid=2,subset=pid`. This exposes only the child's PID 1 entry, completely hides host and external task entries, prevents write operations (`EROFS`), and leaves no residual mounts or processes.
+   - Bounded under an empirically measured 192 MiB cgroup limit (`196608 KiB`), accommodating the Dart VM baseline RSS of ~118–120 MiB while leaving ~73 MiB headroom for user code execution.
 
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
