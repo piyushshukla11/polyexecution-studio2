@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 class LanguageId(str, Enum):
@@ -63,6 +63,7 @@ class SeccompPolicyProfile(str, Enum):
     COMPILER = "compiler"
     PYTHON = "python"
     BASH = "bash"
+    JVM = "jvm"
     JVM_PERMISSIVE = "jvm_permissive"
     V8_NODE = "v8_node"
 
@@ -135,6 +136,32 @@ class RuntimeAdapter:
     @property
     def is_installed(self) -> bool:
         return bool(self.installed_version) and not self.installed_version.startswith("Not installed")
+
+    def resolve_execution_limits(
+        self, custom_limits: Optional[ResourceLimits] = None
+    ) -> Tuple[List[str], ResourceLimits]:
+        """Resolves target execution arguments and resource limits.
+        For JVM runtimes, implements dynamic memory baseline admission:
+        accommodates ~128 MiB metaspace/native reserve (minimum 192 MiB cgroup limit)
+        and dynamically computes the JVM heap budget (-Xmx).
+        """
+        limits = custom_limits or self.execution_spec.default_resource_limits
+        args = list(self.execution_spec.execution_args)
+        if self.family == RuntimeFamily.JVM:
+            min_cgroup_kb = 196608
+            metaspace_reserve_kb = 131072
+            effective_cgroup_kb = max(limits.memory_kb, min_cgroup_kb)
+            heap_mb = max(32, (effective_cgroup_kb - metaspace_reserve_kb) // 1024)
+            filtered_args = [a for a in args if not a.startswith("-Xmx") and not a.startswith("-Xms")]
+            args = [f"-Xmx{heap_mb}m", "-Xms32m"] + filtered_args
+            limits = ResourceLimits(
+                cpu_ms=limits.cpu_ms,
+                wall_ms=limits.wall_ms,
+                memory_kb=effective_cgroup_kb,
+                pids=limits.pids,
+                max_output_bytes=limits.max_output_bytes,
+            )
+        return args, limits
 
 
 @dataclass(frozen=True)

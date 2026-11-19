@@ -52,7 +52,8 @@ typedef enum {
     SECCOMP_PROFILE_STRICT = 0,
     SECCOMP_PROFILE_COMPILER = 1,
     SECCOMP_PROFILE_PYTHON = 2,
-    SECCOMP_PROFILE_BASH = 3
+    SECCOMP_PROFILE_BASH = 3,
+    SECCOMP_PROFILE_JVM = 4
 } seccomp_profile_t;
 
 typedef struct {
