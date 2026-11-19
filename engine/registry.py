@@ -530,6 +530,63 @@ class RuntimeRegistry:
         )
         self.register(racket_adapter)
 
+        # Erlang runtime (Phase 5 Slice 7)
+        erl_bin = "/usr/bin/erl" if os.path.exists("/usr/bin/erl") else shutil.which("erl") or "/usr/bin/erl"
+        erl_eval_harness = (
+            "try "
+            "case compile:file(\"/workspace/solution.erl\", [return_errors, {outdir, \"/workspace\"}]) of "
+            "{ok, Mod} -> "
+            "code:add_patha(\"/workspace\"), "
+            "{module, Mod} = code:ensure_loaded(Mod), "
+            "case erlang:function_exported(Mod, start, 0) of "
+            "true -> Mod:start(); "
+            "false -> case erlang:function_exported(Mod, main, 1) of "
+            "true -> Mod:main([]); "
+            "false -> case erlang:function_exported(Mod, main, 0) of "
+            "true -> Mod:main(); "
+            "false -> io:format(standard_error, \"Error: no start/0, main/1, or main/0 exported in module ~p~n\", [Mod]), halt(1) "
+            "end end end, "
+            "halt(0); "
+            "{error, Errors, _} -> "
+            "lists:foreach(fun({File, ErrList}) -> lists:foreach(fun(Err) -> io:format(standard_error, \"~s: ~p~n\", [File, Err]) end, ErrList) end, Errors), "
+            "halt(1) "
+            "end "
+            "catch Class:Reason:Stack -> "
+            "io:format(standard_error, \"** exception ~p:~p~n~p~n\", [Class, Reason, Stack]), "
+            "halt(1) "
+            "end."
+        )
+        erlang_adapter = RuntimeAdapter(
+            id=LanguageId.ERLANG,
+            display_name="Erlang",
+            official_version="Erlang/OTP 29",
+            installed_version=detect_tool_version(erl_bin, version_arg="-version"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=erl_bin,
+                execution_args=[
+                    "+S", "2:2",
+                    "+A", "2",
+                    "-noshell",
+                    "-eval",
+                    erl_eval_harness,
+                ],
+                source_filename="solution.erl",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=10000,
+                    cpu_ms=5000,
+                    memory_kb=196608,
+                    pids=64,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.ERLANG,
+            ),
+            seccomp_policy=SeccompPolicyProfile.ERLANG,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(erlang_adapter)
+
         # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         py2_adapter = RuntimeAdapter(
@@ -567,24 +624,6 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(swift_adapter)
-
-        erlang_adapter = RuntimeAdapter(
-            id=LanguageId.ERLANG,
-            display_name="Erlang",
-            official_version="Erlang/OTP 27",
-            installed_version=detect_tool_version("/usr/bin/erl"),
-            family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/erl",
-                execution_args=[],
-                source_filename="solution.erl",
-                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
-            ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
-            cleanup_spec=CleanupSpec(),
-        )
-        self.register(erlang_adapter)
 
         elixir_adapter = RuntimeAdapter(
             id=LanguageId.ELIXIR,

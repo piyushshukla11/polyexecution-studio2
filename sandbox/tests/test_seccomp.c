@@ -889,6 +889,193 @@ static void action_racket_sched_setscheduler_blocked(void) {
     sched_setscheduler(0, SCHED_FIFO, &param);
 }
 
+static void action_erlang_getpgrp(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    (void)getpgrp();
+}
+
+static void action_erlang_getresuid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    uid_t ruid, euid, suid;
+    if (getresuid(&ruid, &euid, &suid) != 0) _exit(3);
+}
+
+static void action_erlang_getresgid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    gid_t rgid, egid, sgid;
+    if (getresgid(&rgid, &egid, &sgid) != 0) _exit(3);
+}
+
+static void action_erlang_wait4(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int status;
+    (void)wait4(-1, &status, WNOHANG, NULL);
+}
+
+static void action_erlang_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_erlang_epoll_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create, 1);
+    if (epfd < 0) _exit(3);
+    close(epfd);
+}
+
+static void action_erlang_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    close(epfd);
+}
+
+static void action_erlang_epoll_ctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    int p[2];
+    if (pipe(p) != 0) { close(epfd); _exit(3); }
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = p[0];
+    int rc = (int)syscall(SYS_epoll_ctl, epfd, EPOLL_CTL_ADD, p[0], &ev);
+    close(p[0]); close(p[1]); close(epfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_erlang_epoll_wait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_wait, epfd, &ev, 1, 0);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_erlang_epoll_pwait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_pwait, epfd, &ev, 1, 0, NULL);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_erlang_epoll_pwait2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    struct timespec ts = {0, 0};
+#ifdef SYS_epoll_pwait2
+    int nfds = (int)syscall(SYS_epoll_pwait2, epfd, &ev, 1, &ts, NULL);
+    close(epfd);
+    if (nfds < 0 && errno != ENOSYS) _exit(4);
+#else
+    close(epfd);
+#endif
+}
+
+static void action_erlang_poll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int p[2];
+    if (pipe(p) != 0) _exit(3);
+    struct pollfd pfd = {.fd = p[0], .events = POLLIN, .revents = 0};
+    int rc = poll(&pfd, 1, 0);
+    close(p[0]); close(p[1]);
+    if (rc < 0) _exit(4);
+}
+
+static void action_erlang_ppoll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int p[2];
+    if (pipe(p) != 0) _exit(3);
+    struct pollfd pfd = {.fd = p[0], .events = POLLIN, .revents = 0};
+    struct timespec ts = {0, 0};
+    int rc = ppoll(&pfd, 1, &ts, NULL);
+    close(p[0]); close(p[1]);
+    if (rc < 0) _exit(4);
+}
+
+static void action_erlang_timerfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int tfd = (int)syscall(SYS_timerfd_create, CLOCK_MONOTONIC, 0);
+    if (tfd < 0) _exit(3);
+    close(tfd);
+}
+
+static void action_erlang_timerfd_settime(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int tfd = (int)syscall(SYS_timerfd_create, CLOCK_MONOTONIC, 0);
+    if (tfd < 0) _exit(3);
+    struct itimerspec its;
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = 1;
+    int rc = (int)syscall(SYS_timerfd_settime, tfd, 0, &its, NULL);
+    close(tfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_erlang_timerfd_gettime(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int tfd = (int)syscall(SYS_timerfd_create, CLOCK_MONOTONIC, 0);
+    if (tfd < 0) _exit(3);
+    struct itimerspec its;
+    int rc = (int)syscall(SYS_timerfd_gettime, tfd, &its);
+    close(tfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_erlang_prctl_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "beam-worker") != 0) _exit(3);
+}
+
+static void action_erlang_prctl_get_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    char name[16];
+    if (prctl(PR_GET_NAME, name) != 0) _exit(3);
+}
+
+static void action_erlang_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_erlang_socket_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static void action_erlang_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_erlang_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
+static void action_erlang_capset_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
+}
+
+static void action_erlang_sched_setscheduler_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    struct sched_param param = {0};
+    sched_setscheduler(0, SCHED_FIFO, &param);
+}
+
 int main(void) {
     printf("========================================================================\n");
     printf("Running Seccomp Profile Isolation & Permitted Syscall Unit Tests\n");
@@ -1790,9 +1977,201 @@ int main(void) {
         return 1;
     }
 
+    /* Test 113: getpgrp permitted under Erlang profile */
+    if (expect_success(action_erlang_getpgrp)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits getpgrp without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on getpgrp!\n");
+        return 1;
+    }
+
+    /* Test 114: getresuid permitted under Erlang profile */
+    if (expect_success(action_erlang_getresuid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits getresuid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on getresuid!\n");
+        return 1;
+    }
+
+    /* Test 115: getresgid permitted under Erlang profile */
+    if (expect_success(action_erlang_getresgid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits getresgid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on getresgid!\n");
+        return 1;
+    }
+
+    /* Test 116: wait4 permitted under Erlang profile */
+    if (expect_success(action_erlang_wait4)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits wait4 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on wait4!\n");
+        return 1;
+    }
+
+    /* Test 117: sched_getaffinity permitted under Erlang profile */
+    if (expect_success(action_erlang_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 118: epoll_create permitted under Erlang profile */
+    if (expect_success(action_erlang_epoll_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits epoll_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on epoll_create!\n");
+        return 1;
+    }
+
+    /* Test 119: epoll_create1 permitted under Erlang profile */
+    if (expect_success(action_erlang_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 120: epoll_ctl permitted under Erlang profile */
+    if (expect_success(action_erlang_epoll_ctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits epoll_ctl without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on epoll_ctl!\n");
+        return 1;
+    }
+
+    /* Test 121: epoll_wait permitted under Erlang profile */
+    if (expect_success(action_erlang_epoll_wait)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits epoll_wait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on epoll_wait!\n");
+        return 1;
+    }
+
+    /* Test 122: epoll_pwait permitted under Erlang profile */
+    if (expect_success(action_erlang_epoll_pwait)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits epoll_pwait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on epoll_pwait!\n");
+        return 1;
+    }
+
+    /* Test 123: epoll_pwait2 permitted under Erlang profile */
+    if (expect_success(action_erlang_epoll_pwait2)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits epoll_pwait2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on epoll_pwait2!\n");
+        return 1;
+    }
+
+    /* Test 124: poll permitted under Erlang profile */
+    if (expect_success(action_erlang_poll)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits poll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on poll!\n");
+        return 1;
+    }
+
+    /* Test 125: ppoll permitted under Erlang profile */
+    if (expect_success(action_erlang_ppoll)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits ppoll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on ppoll!\n");
+        return 1;
+    }
+
+    /* Test 126: timerfd_create permitted under Erlang profile */
+    if (expect_success(action_erlang_timerfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits timerfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on timerfd_create!\n");
+        return 1;
+    }
+
+    /* Test 127: timerfd_settime permitted under Erlang profile */
+    if (expect_success(action_erlang_timerfd_settime)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits timerfd_settime without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on timerfd_settime!\n");
+        return 1;
+    }
+
+    /* Test 128: timerfd_gettime permitted under Erlang profile */
+    if (expect_success(action_erlang_timerfd_gettime)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits timerfd_gettime without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on timerfd_gettime!\n");
+        return 1;
+    }
+
+    /* Test 129: prctl(PR_SET_NAME) permitted under Erlang profile */
+    if (expect_success(action_erlang_prctl_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 130: prctl(PR_GET_NAME) permitted under Erlang profile */
+    if (expect_success(action_erlang_prctl_get_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits prctl(PR_GET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on prctl(PR_GET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 131: prctl(PR_SET_DUMPABLE) blocked with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 132: socket() blocked with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_socket_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills socket() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted socket()!\n");
+        return 1;
+    }
+
+    /* Test 133: CLONE_NEWUSER blocked with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 134: unshare blocked with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted unshare()!\n");
+        return 1;
+    }
+
+    /* Test 135: capset blocked with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_capset_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted capset()!\n");
+        return 1;
+    }
+
+    /* Test 136: sched_setscheduler blocked with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_sched_setscheduler_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills sched_setscheduler() with SIGSYS (scheduler changes denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted sched_setscheduler()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 112 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 136 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

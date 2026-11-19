@@ -58,7 +58,8 @@ typedef enum {
     SECCOMP_PROFILE_NODE = 6,
     SECCOMP_PROFILE_PHP = 7,
     SECCOMP_PROFILE_DART = 8,
-    SECCOMP_PROFILE_RACKET = 9
+    SECCOMP_PROFILE_RACKET = 9,
+    SECCOMP_PROFILE_ERLANG = 10
 } seccomp_profile_t;
 
 typedef struct {
