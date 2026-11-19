@@ -243,8 +243,9 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         /*
          * Node.js (V8 & libuv) interpreted runtime permissions:
          * - capget: read-only capability query during runtime startup (capset remains denied)
-         * - sched_getaffinity / sched_getparam / sched_getscheduler:
-         *   CPU topology awareness and thread priority inspection for V8 worker and GC threads
+         * - sched_getaffinity: CPU topology awareness for threadpool sizing
+         * - sched_getparam / sched_getscheduler: read-only thread priority inspection
+         *   invoked by glibc pthread_getattr_np() during V8 GC worker and compiler thread sync
          * - eventfd2: internal libuv loop synchronization
          * - epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
          *   libuv asynchronous I/O event polling loop

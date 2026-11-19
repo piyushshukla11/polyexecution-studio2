@@ -1023,7 +1023,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 55: eventfd2 permitted under Node profile */
+    /* Test 57: eventfd2 permitted under Node profile */
     if (expect_success(action_node_eventfd2)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits eventfd2 without SIGSYS\n");
     } else {
@@ -1031,7 +1031,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 56: epoll_create1 permitted under Node profile */
+    /* Test 58: epoll_create1 permitted under Node profile */
     if (expect_success(action_node_epoll_create1)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_create1 without SIGSYS\n");
     } else {
@@ -1039,7 +1039,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 57: epoll_ctl permitted under Node profile */
+    /* Test 59: epoll_ctl permitted under Node profile */
     if (expect_success(action_node_epoll_ctl)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_ctl without SIGSYS\n");
     } else {
@@ -1047,7 +1047,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 58: epoll_wait permitted under Node profile */
+    /* Test 60: epoll_wait permitted under Node profile */
     if (expect_success(action_node_epoll_wait)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_wait without SIGSYS\n");
     } else {
@@ -1055,7 +1055,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 59: epoll_pwait permitted under Node profile */
+    /* Test 61: epoll_pwait permitted under Node profile */
     if (expect_success(action_node_epoll_pwait)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_pwait without SIGSYS\n");
     } else {
@@ -1063,7 +1063,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 60: epoll_pwait2 permitted under Node profile */
+    /* Test 62: epoll_pwait2 permitted under Node profile */
     if (expect_success(action_node_epoll_pwait2)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_pwait2 without SIGSYS\n");
     } else {
@@ -1071,7 +1071,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 61: io_uring_setup returns ENOSYS under Node profile */
+    /* Test 63: io_uring_setup returns ENOSYS under Node profile */
     if (expect_success(action_node_io_uring_setup_returns_enosys)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE safely returns ENOSYS on io_uring_setup without SIGSYS\n");
     } else {
@@ -1079,7 +1079,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 62: io_uring_enter blocked with SIGSYS under Node profile */
+    /* Test 64: io_uring_enter blocked with SIGSYS under Node profile */
     if (expect_sigsys(action_node_io_uring_enter_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE kills io_uring_enter with SIGSYS (io_uring blocked)\n");
     } else {
@@ -1087,7 +1087,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 63: prctl(PR_SET_NAME) permitted under Node profile */
+    /* Test 65: prctl(PR_SET_NAME) permitted under Node profile */
     if (expect_success(action_node_prctl_name)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits prctl(PR_SET_NAME) without SIGSYS\n");
     } else {
@@ -1095,7 +1095,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 64: prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) permitted under Node profile */
+    /* Test 66: prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) permitted under Node profile */
     if (expect_success(action_node_prctl_vma_anon)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE permits prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) without SIGSYS\n");
     } else {
@@ -1103,7 +1103,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 65: prctl(PR_SET_DUMPABLE) blocked under Node profile */
+    /* Test 67: prctl(PR_SET_DUMPABLE) blocked under Node profile */
     if (expect_sigsys(action_node_prctl_dumpable_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
     } else {
@@ -1111,7 +1111,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 66: socket() blocked under Node profile */
+    /* Test 68: socket() blocked under Node profile */
     if (expect_sigsys(action_node_socket_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE kills socket() with SIGSYS (network denied)\n");
     } else {
@@ -1119,7 +1119,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 67: CLONE_NEWUSER blocked under Node profile */
+    /* Test 69: CLONE_NEWUSER blocked under Node profile */
     if (expect_sigsys(action_node_clone_user_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
     } else {
@@ -1127,7 +1127,7 @@ int main(void) {
         return 1;
     }
 
-    /* Test 68: unshare blocked under Node profile */
+    /* Test 70: unshare blocked under Node profile */
     if (expect_sigsys(action_node_unshare_blocked)) {
         printf("  [PASS] SECCOMP_PROFILE_NODE kills unshare() with SIGSYS (namespaces denied)\n");
     } else {

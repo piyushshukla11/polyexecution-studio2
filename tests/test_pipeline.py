@@ -950,26 +950,47 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(err_res.exit_code, 1)
         self.assertIn("SyntaxError", err_res.stderr)
 
-        # 3. Wall timeout containment
-        timeout_req = ExecutionRequest(
-            request_id="req-live-js-timeout",
+        # 3a. Wall timeout containment (idle process waiting on timer)
+        wall_timeout_req = ExecutionRequest(
+            request_id="req-live-js-wall-timeout",
             language_id=LanguageId.JAVASCRIPT,
             source_code="setTimeout(() => {}, 10000);\n",
             custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=131072, pids=32, max_output_bytes=65536),
         )
-        timeout_res = pipeline.execute(timeout_req)
-        self.assertEqual(timeout_res.final_status, Milestone.TIMEOUT)
+        wall_timeout_res = pipeline.execute(wall_timeout_req)
+        self.assertEqual(wall_timeout_res.final_status, Milestone.TIMEOUT)
 
-        # 4. Memory limit enforcement (allocate beyond 48 MiB cgroup limit)
-        mem_req = ExecutionRequest(
-            request_id="req-live-js-oom",
+        # 3b. CPU timeout containment (CPU exhaustion via infinite busy loop)
+        cpu_timeout_req = ExecutionRequest(
+            request_id="req-live-js-cpu-timeout",
             language_id=LanguageId.JAVASCRIPT,
-            source_code="const arr = []; while(true) { arr.push(Buffer.alloc(1024 * 1024)); }\n",
-            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=2000, memory_kb=49152, pids=32, max_output_bytes=65536),
+            source_code="while(true) {}\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=131072, pids=32, max_output_bytes=65536),
+        )
+        cpu_timeout_res = pipeline.execute(cpu_timeout_req)
+        self.assertEqual(cpu_timeout_res.final_status, Milestone.TIMEOUT)
+        self.assertGreaterEqual(cpu_timeout_res.cpu_ms, 200)
+        self.assertLess(cpu_timeout_res.wall_ms, 4000)
+
+        # 4. Memory limit enforcement at configured adapter default (128 MiB cgroup limit)
+        mem_src = (
+            "const arr = [];\n"
+            "for (let i = 0; i < 20; i++) {\n"
+            "  const b = Buffer.alloc(10 * 1024 * 1024);\n"
+            "  b.fill(1);\n"
+            "  arr.push(b);\n"
+            "}\n"
+        )
+        mem_req = ExecutionRequest(
+            request_id="req-live-js-oom-default-128mb",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code=mem_src,
+            # Exercises adapter's default_resource_limits (memory_kb=131072) without custom overrides
         )
         mem_res = pipeline.execute(mem_req)
         self.assertEqual(mem_res.final_status, Milestone.MEMORY_LIMIT)
         self.assertEqual(mem_res.signal, 9)
+        self.assertGreaterEqual(mem_res.peak_memory_kb, 131072)
 
         # 5. Network denial (socket blocked by policy)
         evil_req = ExecutionRequest(
