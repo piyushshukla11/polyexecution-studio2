@@ -301,11 +301,30 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 32)
         self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
 
+    def test_erlang_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.ERLANG)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.runner_bin, "/usr/bin/erl")
+        self.assertEqual(adapter.execution_spec.source_filename, "solution.erl")
+        self.assertEqual(adapter.execution_spec.execution_args[:4], ["+S", "2:2", "+A", "2"])
+        self.assertEqual(adapter.execution_spec.execution_args[4], "-noshell")
+        self.assertEqual(adapter.execution_spec.execution_args[5], "-eval")
+        self.assertIn("/workspace/solution.erl", adapter.execution_spec.execution_args[6])
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.ERLANG)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.ERLANG)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 196608)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 10000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 5000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 64)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ERLANG,
             LanguageId.ELIXIR,
             LanguageId.CSHARP,
         ]
@@ -331,7 +350,6 @@ class TestRuntimeRegistry(unittest.TestCase):
         for lang_id in [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ERLANG,
             LanguageId.ELIXIR,
         ]:
             ad = self.registry.get(lang_id)

@@ -2,6 +2,7 @@
 
 import glob
 import os
+import subprocess
 import unittest
 
 from engine.models import (
@@ -936,6 +937,57 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_erlang_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 300, 250, 60000, "hello erlang\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-erlang-ok",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\n-export([start/0]).\nstart() -> io:format(\"hello erlang~n\").\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello erlang\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/erl")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.ERLANG)
+
+    def test_erlang_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 300, 250, 60000, "", "** exception error:badarith\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-erlang-err",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\n-export([start/0]).\nstart() -> 1 / 0.\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("badarith", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
     def test_typescript_success_milestones(self) -> None:
         # Mock compilation and execution success
         self.runner.queue_result(
@@ -1034,7 +1086,6 @@ class TestExecutionPipeline(unittest.TestCase):
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ERLANG,
             LanguageId.ELIXIR,
             LanguageId.CSHARP,
         ]
@@ -1721,6 +1772,134 @@ class TestExecutionPipeline(unittest.TestCase):
             request_id="req-live-racket-socket-blocked",
             language_id=LanguageId.RACKET,
             source_code="#lang racket\n(require racket/tcp)\n(tcp-connect \"127.0.0.1\" 80)\n",
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_execution_erlang(self) -> None:
+        try:
+            res = subprocess.run(["unshare", "-Ur", "true"], capture_output=True, timeout=2)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        erl_adapter = self.registry.get(LanguageId.ERLANG)
+        if not erl_adapter or not erl_adapter.is_installed:
+            self.skipTest("Erlang not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal execution with start/0: covers exact /workspace/solution.erl path
+        erl_src = (
+            "-module(solution).\n"
+            "-export([start/0]).\n"
+            "start() ->\n"
+            "    io:format(\"ERLANG_START_SUCCESS~n\").\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-erlang-start",
+            language_id=LanguageId.ERLANG,
+            source_code=erl_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("ERLANG_START_SUCCESS", ok_res.stdout)
+
+        # 1b. Normal execution with main/1
+        erl_main_src = (
+            "-module(solution).\n"
+            "-export([main/1]).\n"
+            "main(_) ->\n"
+            "    io:format(\"ERLANG_MAIN_SUCCESS~n\").\n"
+        )
+        main_req = ExecutionRequest(
+            request_id="req-live-erlang-main",
+            language_id=LanguageId.ERLANG,
+            source_code=erl_main_src,
+        )
+        main_res = pipeline.execute(main_req)
+        self.assertEqual(main_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(main_res.exit_code, 0)
+        self.assertIn("ERLANG_MAIN_SUCCESS", main_res.stdout)
+
+        # 2. Syntax error
+        syntax_err_req = ExecutionRequest(
+            request_id="req-live-erlang-syntax-err",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\nstart() -> syntax error here.\n",
+        )
+        syntax_err_res = pipeline.execute(syntax_err_req)
+        self.assertEqual(syntax_err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(syntax_err_res.exit_code, 1)
+
+        # 2b. Runtime exception (badarith)
+        crash_req = ExecutionRequest(
+            request_id="req-live-erlang-crash",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\n-export([start/0]).\nstart() -> 1 / 0.\n",
+        )
+        crash_res = pipeline.execute(crash_req)
+        self.assertEqual(crash_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(crash_res.exit_code, 1)
+        self.assertIn("badarith", crash_res.stderr)
+
+        # 3a. Wall timeout
+        wall_to_req = ExecutionRequest(
+            request_id="req-live-erlang-wall-timeout",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\n-export([start/0]).\nstart() -> timer:sleep(10000).\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=196608, pids=64, max_output_bytes=65536),
+        )
+        wall_to_res = pipeline.execute(wall_to_req)
+        self.assertEqual(wall_to_res.final_status, Milestone.TIMEOUT)
+
+        # 3b. CPU timeout
+        cpu_to_req = ExecutionRequest(
+            request_id="req-live-erlang-cpu-timeout",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\n-export([start/0, loop/0]).\nloop() -> loop().\nstart() -> loop().\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=196608, pids=64, max_output_bytes=65536),
+        )
+        cpu_to_res = pipeline.execute(cpu_to_req)
+        self.assertEqual(cpu_to_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement at adapter default (192 MiB)
+        oom_src = (
+            "-module(solution).\n"
+            "-export([start/0, bomb/1]).\n"
+            "bomb(Acc) -> bomb([binary:copy(<<42>>, 20000000) | Acc]).\n"
+            "start() -> bomb([]).\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-erlang-oom-default-192mb",
+            language_id=LanguageId.ERLANG,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-erlang-socket-blocked",
+            language_id=LanguageId.ERLANG,
+            source_code="-module(solution).\n-export([start/0]).\nstart() -> gen_tcp:connect(\"127.0.0.1\", 80, []).\n",
         )
         evil_res = pipeline.execute(evil_req)
         self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)

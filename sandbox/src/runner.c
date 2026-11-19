@@ -726,6 +726,7 @@ int main(int argc, char **argv) {
             else if (strcmp(prof, "php") == 0) config.seccomp_profile = SECCOMP_PROFILE_PHP;
             else if (strcmp(prof, "dart") == 0) config.seccomp_profile = SECCOMP_PROFILE_DART;
             else if (strcmp(prof, "racket") == 0) config.seccomp_profile = SECCOMP_PROFILE_RACKET;
+            else if (strcmp(prof, "erlang") == 0) config.seccomp_profile = SECCOMP_PROFILE_ERLANG;
             else {
                 fprintf(stderr, "runner: invalid or unsupported seccomp profile '%s'\n", prof);
                 return STATUS_SANDBOX_ERROR;
@@ -755,6 +756,6 @@ int main(int argc, char **argv) {
     return status;
 
 usage:
-    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart|racket] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart|racket|erlang] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
     return STATUS_SANDBOX_ERROR;
 }

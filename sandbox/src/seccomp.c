@@ -31,7 +31,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         profile != SECCOMP_PROFILE_NODE &&
         profile != SECCOMP_PROFILE_PHP &&
         profile != SECCOMP_PROFILE_DART &&
-        profile != SECCOMP_PROFILE_RACKET) {
+        profile != SECCOMP_PROFILE_RACKET &&
+        profile != SECCOMP_PROFILE_ERLANG) {
         errno = EINVAL;
         return -1;
     }
@@ -394,6 +395,54 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         };
         for (size_t i = 0; i < sizeof(racket_allowed) / sizeof(racket_allowed[0]); ++i) {
             if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, racket_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * Restrict prctl strictly to PR_SET_NAME and PR_GET_NAME:
+         * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_GET_NAME)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (profile == SECCOMP_PROFILE_ERLANG) {
+        /*
+         * Erlang / OTP BEAM emulator execution & launcher script permissions:
+         * - getpgrp / getresuid / getresgid / wait4: shell launcher script (/usr/bin/erl) initialization & exec
+         * - sched_getaffinity: CPU scheduler topology detection for BEAM SMP
+         * - epoll_create / epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
+         *   BEAM asynchronous I/O driver event polling loop
+         * - poll / ppoll: file descriptor polling
+         * - timerfd_create / timerfd_settime / timerfd_gettime: kernel timerfd integration for BEAM timer driver
+         */
+        const int erlang_allowed[] = {
+            SCMP_SYS(getpgrp),
+            SCMP_SYS(getresuid),
+            SCMP_SYS(getresgid),
+            SCMP_SYS(wait4),
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(epoll_create),
+            SCMP_SYS(epoll_create1),
+            SCMP_SYS(epoll_ctl),
+            SCMP_SYS(epoll_wait),
+            SCMP_SYS(epoll_pwait),
+            SCMP_SYS(epoll_pwait2),
+            SCMP_SYS(poll),
+            SCMP_SYS(ppoll),
+            SCMP_SYS(timerfd_create),
+            SCMP_SYS(timerfd_settime),
+            SCMP_SYS(timerfd_gettime)
+        };
+        for (size_t i = 0; i < sizeof(erlang_allowed) / sizeof(erlang_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, erlang_allowed[i], 0) < 0) {
                 seccomp_release(ctx);
                 errno = EINVAL;
                 return -1;
