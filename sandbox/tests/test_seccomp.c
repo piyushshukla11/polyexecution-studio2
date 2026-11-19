@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/capability.h>
 #include <linux/sched.h>
 #include <sched.h>
 #include <stdio.h>
@@ -19,6 +20,13 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef SYS_io_uring_setup
+#define SYS_io_uring_setup 425
+#endif
+#ifndef SYS_io_uring_enter
+#define SYS_io_uring_enter 426
+#endif
 
 #ifndef PR_SET_VMA
 #define PR_SET_VMA 0x53564d41
@@ -414,6 +422,151 @@ static void action_ruby_clone_user_blocked(void) {
 
 static void action_ruby_unshare_blocked(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
+static void action_node_capget(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    if (syscall(SYS_capget, &hdr, data) != 0) _exit(3);
+}
+
+static void action_node_capset_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
+}
+
+static void action_node_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_node_sched_getparam(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    struct sched_param param;
+    if (sched_getparam(0, &param) != 0) _exit(3);
+}
+
+static void action_node_sched_getscheduler(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    if (sched_getscheduler(0) < 0) _exit(3);
+}
+
+static void action_node_eventfd2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_node_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    int fd = (int)syscall(SYS_epoll_create1, 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_node_epoll_ctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    int pfd[2];
+    if (pipe2(pfd, O_CLOEXEC) != 0) _exit(4);
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.fd = pfd[0];
+    int rc = (int)syscall(SYS_epoll_ctl, epfd, EPOLL_CTL_ADD, pfd[0], &ev);
+    close(pfd[0]);
+    close(pfd[1]);
+    close(epfd);
+    if (rc != 0) _exit(5);
+}
+
+static void action_node_epoll_wait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_wait, epfd, &ev, 1, 0);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_node_epoll_pwait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_pwait, epfd, &ev, 1, 0, NULL);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_node_epoll_pwait2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    struct timespec ts = {0, 0};
+#ifdef SYS_epoll_pwait2
+    int nfds = (int)syscall(SYS_epoll_pwait2, epfd, &ev, 1, &ts, NULL);
+    close(epfd);
+    if (nfds < 0 && errno != ENOSYS) _exit(4);
+#else
+    close(epfd);
+#endif
+}
+
+static void action_node_io_uring_setup_returns_enosys(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    char p[128];
+    memset(p, 0, sizeof(p));
+    long rc = syscall(SYS_io_uring_setup, 256, p);
+    if (rc == -1 && errno == ENOSYS) _exit(0);
+    _exit(3);
+}
+
+static void action_node_io_uring_enter_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    syscall(SYS_io_uring_enter, 0, 0, 0, 0, NULL, 0);
+}
+
+static void action_node_prctl_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "node-worker") != 0) _exit(3);
+}
+
+static void action_node_prctl_vma_anon(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    void *addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) _exit(2);
+    (void)prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (unsigned long)addr, 4096, (unsigned long)"v8:isolate");
+    munmap(addr, 4096);
+}
+
+static void action_node_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_node_socket_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static void action_node_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_node_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_NODE) != 0) _exit(2);
     unshare(CLONE_NEWUSER);
 }
 
@@ -830,9 +983,161 @@ int main(void) {
         return 1;
     }
 
+    /* Test 52: capget permitted under Node profile */
+    if (expect_success(action_node_capget)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits capget without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on capget!\n");
+        return 1;
+    }
+
+    /* Test 53: capset blocked under Node profile */
+    if (expect_sigsys(action_node_capset_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE permitted capset()!\n");
+        return 1;
+    }
+
+    /* Test 54: sched_getaffinity permitted under Node profile */
+    if (expect_success(action_node_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 55: sched_getparam permitted under Node profile */
+    if (expect_success(action_node_sched_getparam)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits sched_getparam without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on sched_getparam!\n");
+        return 1;
+    }
+
+    /* Test 56: sched_getscheduler permitted under Node profile */
+    if (expect_success(action_node_sched_getscheduler)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits sched_getscheduler without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on sched_getscheduler!\n");
+        return 1;
+    }
+
+    /* Test 55: eventfd2 permitted under Node profile */
+    if (expect_success(action_node_eventfd2)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits eventfd2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on eventfd2!\n");
+        return 1;
+    }
+
+    /* Test 56: epoll_create1 permitted under Node profile */
+    if (expect_success(action_node_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 57: epoll_ctl permitted under Node profile */
+    if (expect_success(action_node_epoll_ctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_ctl without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on epoll_ctl!\n");
+        return 1;
+    }
+
+    /* Test 58: epoll_wait permitted under Node profile */
+    if (expect_success(action_node_epoll_wait)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_wait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on epoll_wait!\n");
+        return 1;
+    }
+
+    /* Test 59: epoll_pwait permitted under Node profile */
+    if (expect_success(action_node_epoll_pwait)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_pwait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on epoll_pwait!\n");
+        return 1;
+    }
+
+    /* Test 60: epoll_pwait2 permitted under Node profile */
+    if (expect_success(action_node_epoll_pwait2)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits epoll_pwait2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on epoll_pwait2!\n");
+        return 1;
+    }
+
+    /* Test 61: io_uring_setup returns ENOSYS under Node profile */
+    if (expect_success(action_node_io_uring_setup_returns_enosys)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE safely returns ENOSYS on io_uring_setup without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed to return ENOSYS on io_uring_setup!\n");
+        return 1;
+    }
+
+    /* Test 62: io_uring_enter blocked with SIGSYS under Node profile */
+    if (expect_sigsys(action_node_io_uring_enter_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE kills io_uring_enter with SIGSYS (io_uring blocked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE permitted io_uring_enter!\n");
+        return 1;
+    }
+
+    /* Test 63: prctl(PR_SET_NAME) permitted under Node profile */
+    if (expect_success(action_node_prctl_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 64: prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) permitted under Node profile */
+    if (expect_success(action_node_prctl_vma_anon)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE permits prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE failed on prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 65: prctl(PR_SET_DUMPABLE) blocked under Node profile */
+    if (expect_sigsys(action_node_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 66: socket() blocked under Node profile */
+    if (expect_sigsys(action_node_socket_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE kills socket() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE permitted socket()!\n");
+        return 1;
+    }
+
+    /* Test 67: CLONE_NEWUSER blocked under Node profile */
+    if (expect_sigsys(action_node_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 68: unshare blocked under Node profile */
+    if (expect_sigsys(action_node_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_NODE kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_NODE permitted unshare()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 51 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 70 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

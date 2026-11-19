@@ -728,9 +728,59 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_javascript_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 30, 20, 49152, "hello javascript\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-js-ok",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="console.log('hello javascript');\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello javascript\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/node")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.NODE)
+
+    def test_javascript_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 25, 15, 49152, "", "SyntaxError: Unexpected token\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-js-err",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="function broken( {\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("SyntaxError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
     def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
         unsupported = [
-            LanguageId.JAVASCRIPT,
             LanguageId.TYPESCRIPT,
             LanguageId.PHP,
             LanguageId.PYTHON2,
@@ -847,6 +897,105 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(fiber_res.final_status, Milestone.COMPLETED)
         self.assertEqual(fiber_res.exit_code, 0)
         self.assertIn("Fiber-Result: 42, done", fiber_res.stdout)
+
+        # 7. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_javascript_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal Node.js execution
+        ok_req = ExecutionRequest(
+            request_id="req-live-js-ok",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="console.log('live node sandboxed', 20 + 22);\n",
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertEqual(ok_res.stdout.strip(), "live node sandboxed 42")
+        milestone_names = [m.milestone for m in ok_res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.RUNNING, Milestone.COMPLETED])
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
+        # 2. Syntax error handling
+        err_req = ExecutionRequest(
+            request_id="req-live-js-syntax-err",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="function broken( {\n",
+        )
+        err_res = pipeline.execute(err_req)
+        self.assertEqual(err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(err_res.exit_code, 1)
+        self.assertIn("SyntaxError", err_res.stderr)
+
+        # 3. Wall timeout containment
+        timeout_req = ExecutionRequest(
+            request_id="req-live-js-timeout",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="setTimeout(() => {}, 10000);\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=131072, pids=32, max_output_bytes=65536),
+        )
+        timeout_res = pipeline.execute(timeout_req)
+        self.assertEqual(timeout_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement (allocate beyond 48 MiB cgroup limit)
+        mem_req = ExecutionRequest(
+            request_id="req-live-js-oom",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="const arr = []; while(true) { arr.push(Buffer.alloc(1024 * 1024)); }\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=2000, memory_kb=49152, pids=32, max_output_bytes=65536),
+        )
+        mem_res = pipeline.execute(mem_req)
+        self.assertEqual(mem_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(mem_res.signal, 9)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-js-socket-blocked",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code="require('http').get('http://1.1.1.1');\n",
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Libuv async event loop timer execution inside sandbox
+        async_src = (
+            "setTimeout(() => {\n"
+            "  console.log('Async-Timer-Result: 42, done');\n"
+            "}, 10);\n"
+        )
+        async_req = ExecutionRequest(
+            request_id="req-live-js-async",
+            language_id=LanguageId.JAVASCRIPT,
+            source_code=async_src,
+        )
+        async_res = pipeline.execute(async_req)
+        self.assertEqual(async_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(async_res.exit_code, 0)
+        self.assertIn("Async-Timer-Result: 42, done", async_res.stdout)
 
         # 7. Verify zero cgroup leftovers
         leftovers = [

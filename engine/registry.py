@@ -381,7 +381,7 @@ class RuntimeRegistry:
         )
         self.register(ruby_adapter)
 
-        # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
+        # JavaScript (Node.js) runtime
         js_adapter = RuntimeAdapter(
             id=LanguageId.JAVASCRIPT,
             display_name="JavaScript (Node.js)",
@@ -391,14 +391,23 @@ class RuntimeRegistry:
             compile_spec=None,
             execution_spec=ExecutionSpec(
                 runner_bin="/usr/bin/node",
-                execution_args=["/workspace/solution.js"],
-                source_filename="solution.js",
-                seccomp_profile=SeccompPolicyProfile.V8_NODE,
+                execution_args=["/workspace/Solution.js"],
+                source_filename="Solution.js",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=2000,
+                    memory_kb=131072,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.NODE,
             ),
-            seccomp_policy=SeccompPolicyProfile.V8_NODE,
+            seccomp_policy=SeccompPolicyProfile.NODE,
             cleanup_spec=CleanupSpec(),
         )
         self.register(js_adapter)
+
+        # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         ts_adapter = RuntimeAdapter(
             id=LanguageId.TYPESCRIPT,

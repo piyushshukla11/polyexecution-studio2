@@ -193,9 +193,28 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.RUBY)
         self.assertGreaterEqual(adapter.execution_spec.default_resource_limits.memory_kb, 65536)
 
+    def test_javascript_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.JAVASCRIPT)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.display_name, "JavaScript (Node.js)")
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.NODE)
+        self.assertTrue(adapter.is_installed)
+        self.assertEqual(adapter.installed_version, "v26.12.0")
+
+        # Single-stage execution: compile_spec MUST be None to never emit COMPILING
+        self.assertIsNone(adapter.compile_spec)
+
+        # ExecutionSpec verification
+        self.assertTrue(os.path.isabs(adapter.execution_spec.runner_bin))
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.js")
+        self.assertIn("/workspace/Solution.js", adapter.execution_spec.execution_args)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 131072)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
-            LanguageId.JAVASCRIPT,
             LanguageId.TYPESCRIPT,
             LanguageId.PHP,
             LanguageId.PYTHON2,
@@ -217,14 +236,6 @@ class TestRuntimeRegistry(unittest.TestCase):
             self.assertIsNone(adapter.compile_spec)
 
         # Truthful classification checks
-        js_adapter = self.registry.get(LanguageId.JAVASCRIPT)
-        assert js_adapter is not None
-        self.assertTrue(
-            js_adapter.installed_version.startswith("Unavailable to sandbox rootfs"),
-            f"Expected user-space mise node to be reported unavailable to sandbox: {js_adapter.installed_version}",
-        )
-        self.assertIn("user path", js_adapter.installed_version)
-
         csharp_adapter = self.registry.get(LanguageId.CSHARP)
         assert csharp_adapter is not None
         self.assertTrue(

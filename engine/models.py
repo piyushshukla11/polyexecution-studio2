@@ -65,7 +65,8 @@ class SeccompPolicyProfile(str, Enum):
     BASH = "bash"
     JVM = "jvm"
     JVM_PERMISSIVE = "jvm_permissive"
-    V8_NODE = "v8_node"
+    V8_NODE = "node"
+    NODE = "node"
     RUBY = "ruby"
 
 

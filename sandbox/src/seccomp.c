@@ -27,7 +27,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         profile != SECCOMP_PROFILE_PYTHON &&
         profile != SECCOMP_PROFILE_BASH &&
         profile != SECCOMP_PROFILE_JVM &&
-        profile != SECCOMP_PROFILE_RUBY) {
+        profile != SECCOMP_PROFILE_RUBY &&
+        profile != SECCOMP_PROFILE_NODE) {
         errno = EINVAL;
         return -1;
     }
@@ -231,6 +232,63 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
             seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 2,
                              SCMP_A0(SCMP_CMP_EQ, PR_SET_THP_DISABLE),
                              SCMP_A1(SCMP_CMP_EQ, 1)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 2,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_VMA),
+                             SCMP_A1(SCMP_CMP_EQ, PR_SET_VMA_ANON_NAME)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (profile == SECCOMP_PROFILE_NODE) {
+        /*
+         * Node.js (V8 & libuv) interpreted runtime permissions:
+         * - capget: read-only capability query during runtime startup (capset remains denied)
+         * - sched_getaffinity / sched_getparam / sched_getscheduler:
+         *   CPU topology awareness and thread priority inspection for V8 worker and GC threads
+         * - eventfd2: internal libuv loop synchronization
+         * - epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
+         *   libuv asynchronous I/O event polling loop
+         */
+        const int node_allowed[] = {
+            SCMP_SYS(capget),
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(sched_getparam),
+            SCMP_SYS(sched_getscheduler),
+            SCMP_SYS(eventfd2),
+            SCMP_SYS(epoll_create1),
+            SCMP_SYS(epoll_ctl),
+            SCMP_SYS(epoll_wait),
+            SCMP_SYS(epoll_pwait),
+            SCMP_SYS(epoll_pwait2)
+        };
+        for (size_t i = 0; i < sizeof(node_allowed) / sizeof(node_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, node_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * Return ENOSYS for io_uring_setup so libuv's probe cleanly falls back
+         * to epoll without crashing the process. Related io_uring calls
+         * (io_uring_enter, io_uring_register) remain strictly denied by default (SIGSYS).
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOSYS), SCMP_SYS(io_uring_setup), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Restrict prctl strictly to observed Node.js / V8 operations:
+         * 1. PR_SET_NAME: Thread naming for libuv worker threads and V8 GC threads
+         * 2. PR_SET_VMA: Labels memory areas in V8 heap/isolate; strictly restricted
+         *    to arg2 == PR_SET_VMA_ANON_NAME (0).
+         * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0 ||
             seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 2,
                              SCMP_A0(SCMP_CMP_EQ, PR_SET_VMA),
                              SCMP_A1(SCMP_CMP_EQ, PR_SET_VMA_ANON_NAME)) < 0) {
