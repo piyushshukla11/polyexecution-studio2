@@ -221,6 +221,86 @@ class RuntimeRegistry:
         )
         self.register(bash_adapter)
 
+        # Tier 4 JVM Java Runtime (javac / java)
+        javac_bin = "/usr/bin/javac" if os.path.exists("/usr/bin/javac") else shutil.which("javac") or "/usr/bin/javac"
+        java_bin = "/usr/bin/java" if os.path.exists("/usr/bin/java") else shutil.which("java") or "/usr/bin/java"
+        java_adapter = RuntimeAdapter(
+            id=LanguageId.JAVA,
+            display_name="Java",
+            official_version="OpenJDK 25 (Java 25)",
+            installed_version=detect_tool_version(javac_bin),
+            family=RuntimeFamily.JVM,
+            compile_spec=CompileSpec(
+                compiler_bin=javac_bin,
+                compile_args=["-d", "/workspace", "/workspace/Solution.java"],
+                source_filename="Solution.java",
+                artifact_output_name="Solution.class",
+                compile_resource_limits=ResourceLimits(
+                    cpu_ms=5000,
+                    wall_ms=10000,
+                    memory_kb=524288,
+                    pids=64,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.JVM,
+            ),
+            execution_spec=ExecutionSpec(
+                runner_bin=java_bin,
+                execution_args=["-Xmx256m", "-Xms32m", "-XX:+UseSerialGC", "-cp", "/workspace", "Solution"],
+                source_filename="Solution.java",
+                default_resource_limits=ResourceLimits(
+                    cpu_ms=2000,
+                    wall_ms=5000,
+                    memory_kb=393216,
+                    pids=64,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.JVM,
+            ),
+            seccomp_policy=SeccompPolicyProfile.JVM,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(java_adapter)
+
+        # Truthfully uninstalled JVM stubs for Kotlin and Scala
+        kotlinc_bin = "/usr/bin/kotlinc"
+        kotlin_adapter = RuntimeAdapter(
+            id=LanguageId.KOTLIN,
+            display_name="Kotlin",
+            official_version="Kotlin 2.0",
+            installed_version=detect_tool_version(kotlinc_bin),
+            family=RuntimeFamily.JVM,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=kotlinc_bin,
+                execution_args=[],
+                source_filename="solution.kt",
+                seccomp_profile=SeccompPolicyProfile.JVM,
+            ),
+            seccomp_policy=SeccompPolicyProfile.JVM,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(kotlin_adapter)
+
+        scalac_bin = "/usr/bin/scalac"
+        scala_adapter = RuntimeAdapter(
+            id=LanguageId.SCALA,
+            display_name="Scala",
+            official_version="Scala 3.5",
+            installed_version=detect_tool_version(scalac_bin),
+            family=RuntimeFamily.JVM,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=scalac_bin,
+                execution_args=[],
+                source_filename="solution.scala",
+                seccomp_profile=SeccompPolicyProfile.JVM,
+            ),
+            seccomp_policy=SeccompPolicyProfile.JVM,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(scala_adapter)
+
         # Uninstalled stubs for Go and Rust (truthfully reported)
         go_bin = "/usr/bin/go"
         go_adapter = RuntimeAdapter(

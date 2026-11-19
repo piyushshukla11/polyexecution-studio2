@@ -112,7 +112,7 @@ static int make_dir(const char *path, mode_t mode) {
 
 static int create_rootfs(const char *rootfs) {
     static const char *const dirs[] = {
-        "usr", "bin", "lib", "lib64", "etc", "workspace", "tmp", "dev"
+        "usr", "bin", "lib", "lib64", "etc", "etc/java-openjdk", "workspace", "tmp", "dev"
     };
     char path[PATH_MAX];
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
@@ -155,6 +155,11 @@ static int setup_mounts(const struct child_context *ctx) {
     n = snprintf(target, sizeof(target), "%s/etc/ld.so.cache", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target)) { errno = ENAMETOOLONG; return -1; }
     if (access("/etc/ld.so.cache", R_OK) == 0 && bind_mount("/etc/ld.so.cache", target, 1) != 0) return -1;
+
+    if (access("/etc/java-openjdk", F_OK) == 0) {
+        n = snprintf(target, sizeof(target), "%s/etc/java-openjdk", ctx->rootfs);
+        if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/etc/java-openjdk", target, 1) != 0) return -1;
+    }
 
     n = snprintf(target, sizeof(target), "%s/dev/null", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/dev/null", target, 0) != 0) return -1;
@@ -254,6 +259,7 @@ static int child_main(void *opaque) {
         "HOME=/workspace",
         "TMPDIR=/tmp",
         "LANG=C",
+        "LD_LIBRARY_PATH=/usr/lib/jvm/default/lib:/usr/lib/jvm/default/lib/server",
         NULL
     };
     execve(ctx->config->target_bin, ctx->config->target_argv, safe_env);
@@ -697,6 +703,7 @@ int main(int argc, char **argv) {
             else if (strcmp(prof, "compiler") == 0) config.seccomp_profile = SECCOMP_PROFILE_COMPILER;
             else if (strcmp(prof, "python") == 0) config.seccomp_profile = SECCOMP_PROFILE_PYTHON;
             else if (strcmp(prof, "bash") == 0) config.seccomp_profile = SECCOMP_PROFILE_BASH;
+            else if (strcmp(prof, "jvm") == 0) config.seccomp_profile = SECCOMP_PROFILE_JVM;
             else {
                 fprintf(stderr, "runner: invalid or unsupported seccomp profile '%s'\n", prof);
                 return STATUS_SANDBOX_ERROR;
@@ -726,6 +733,6 @@ int main(int argc, char **argv) {
     return status;
 
 usage:
-    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
     return STATUS_SANDBOX_ERROR;
 }

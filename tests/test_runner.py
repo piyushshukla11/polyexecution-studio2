@@ -108,6 +108,17 @@ class TestNativeSandboxRunner(unittest.TestCase):
             idx = cmd.index("--seccomp-profile")
             self.assertEqual(cmd[idx + 1], "bash")
 
+            runner.run(
+                workspace="/tmp",
+                target_bin="/bin/true",
+                target_argv=["foo"],
+                limits=ResourceLimits(),
+                seccomp_profile=SeccompPolicyProfile.JVM,
+            )
+            cmd = mock_popen.call_args[0][0]
+            idx = cmd.index("--seccomp-profile")
+            self.assertEqual(cmd[idx + 1], "jvm")
+
     def test_cancel_token_terminates_process(self) -> None:
         import threading
         import time

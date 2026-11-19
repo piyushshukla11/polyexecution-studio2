@@ -1,6 +1,8 @@
 # PolyExecution Studio 2 .gitignore
 
 # Build outputs & artifacts
+sandbox/pes2-runner
+tests/test_seccomp
 build/
 dist/
 target/

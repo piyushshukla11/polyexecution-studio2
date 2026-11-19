@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -210,6 +212,79 @@ static void action_bash_unshare_blocked(void) {
     unshare(CLONE_NEWUSER);
 }
 
+static void action_strict_fchdir(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    fchdir(-1);
+}
+
+static void action_jvm_fchdir(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    fchdir(-1);
+}
+
+static void action_strict_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    ftruncate(-1, 0);
+}
+
+static void action_jvm_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    ftruncate(-1, 0);
+}
+
+static void action_strict_flock(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    flock(-1, LOCK_SH);
+}
+
+static void action_jvm_flock(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    flock(-1, LOCK_SH);
+}
+
+static void action_strict_prctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    prctl(PR_SET_NAME, "test");
+}
+
+static void action_jvm_prctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "test") != 0) _exit(3);
+}
+
+static void action_jvm_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_jvm_getrusage(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) _exit(3);
+}
+
+static void action_jvm_socket_eperm(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_jvm_connect_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    connect(-1, NULL, 0);
+}
+
+static void action_jvm_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_jvm_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
 int main(void) {
     printf("========================================================================\n");
     printf("Running Seccomp Profile Isolation & Permitted Syscall Unit Tests\n");
@@ -391,9 +466,121 @@ int main(void) {
         return 1;
     }
 
+    /* Test 23: fchdir blocked under strict profile */
+    if (expect_sigsys(action_strict_fchdir)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills fchdir with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted fchdir!\n");
+        return 1;
+    }
+
+    /* Test 24: fchdir permitted under JVM profile */
+    if (expect_success(action_jvm_fchdir)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM permits fchdir without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM failed on fchdir!\n");
+        return 1;
+    }
+
+    /* Test 25: ftruncate blocked under strict profile */
+    if (expect_sigsys(action_strict_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills ftruncate with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 26: ftruncate permitted under JVM profile */
+    if (expect_success(action_jvm_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM permits ftruncate without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM failed on ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 27: flock blocked under strict profile */
+    if (expect_sigsys(action_strict_flock)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills flock with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted flock!\n");
+        return 1;
+    }
+
+    /* Test 28: flock permitted under JVM profile */
+    if (expect_success(action_jvm_flock)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM permits flock without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM failed on flock!\n");
+        return 1;
+    }
+
+    /* Test 29: prctl blocked under strict profile */
+    if (expect_sigsys(action_strict_prctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT correctly kills prctl with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted prctl!\n");
+        return 1;
+    }
+
+    /* Test 30: prctl(PR_SET_NAME) permitted under JVM profile */
+    if (expect_success(action_jvm_prctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM permits prctl(PR_SET_NAME) without SIGSYS (for thread naming)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 31: prctl with PR_SET_DUMPABLE blocked under JVM profile */
+    if (expect_sigsys(action_jvm_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 32: getrusage permitted under JVM profile */
+    if (expect_success(action_jvm_getrusage)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM permits getrusage without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM failed on getrusage!\n");
+        return 1;
+    }
+
+    /* Test 33: socket() fails with EPERM under JVM profile (network denied without SIGSYS) */
+    if (expect_success(action_jvm_socket_eperm)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM returns EPERM on socket() (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM did not return EPERM on socket()!\n");
+        return 1;
+    }
+
+    /* Test 34: connect() blocked with SIGSYS under JVM profile */
+    if (expect_sigsys(action_jvm_connect_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM kills connect() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM permitted connect()!\n");
+        return 1;
+    }
+
+    /* Test 35: CLONE_NEWUSER blocked under JVM profile */
+    if (expect_sigsys(action_jvm_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 36: unshare blocked under JVM profile */
+    if (expect_sigsys(action_jvm_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_JVM kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_JVM permitted unshare()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 22 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 36 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

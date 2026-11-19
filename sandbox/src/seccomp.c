@@ -15,7 +15,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
     if (profile != SECCOMP_PROFILE_STRICT &&
         profile != SECCOMP_PROFILE_COMPILER &&
         profile != SECCOMP_PROFILE_PYTHON &&
-        profile != SECCOMP_PROFILE_BASH) {
+        profile != SECCOMP_PROFILE_BASH &&
+        profile != SECCOMP_PROFILE_JVM) {
         errno = EINVAL;
         return -1;
     }
@@ -115,6 +116,71 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
                 errno = EINVAL;
                 return -1;
             }
+        }
+    } else if (profile == SECCOMP_PROFILE_JVM) {
+        /*
+         * JVM execution & javac compilation permissions:
+         * - fchdir: directory/jar traversal using directory file descriptors
+         * - ftruncate: classfile generation and buffer sizing
+         * - flock: file-locking coordination on jar/class caches
+         * - prctl(PR_SET_NAME): thread naming for HotSpot internal threads
+         * - sched_getaffinity: CPU topology awareness for GC and JIT compiler thread sizing
+         * - getrusage: process resource accounting
+         * - restart_syscall: signal interruption restarts
+         * - wait4 / waitid: child process and launcher process reaping
+         * - unlink / unlinkat: classfile / cache management
+         * - mkdir / mkdirat: directory creation for packaged classes
+         * - rename / renameat / renameat2: atomic classfile writes
+         */
+        const int jvm_allowed[] = {
+            SCMP_SYS(fchdir),
+            SCMP_SYS(ftruncate),
+            SCMP_SYS(flock),
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(getrusage),
+            SCMP_SYS(restart_syscall),
+            SCMP_SYS(wait4),
+            SCMP_SYS(waitid),
+            SCMP_SYS(unlink),
+            SCMP_SYS(unlinkat),
+            SCMP_SYS(mkdir),
+            SCMP_SYS(mkdirat),
+            SCMP_SYS(rename),
+            SCMP_SYS(renameat),
+            SCMP_SYS(renameat2)
+        };
+        for (size_t i = 0; i < sizeof(jvm_allowed) / sizeof(jvm_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, jvm_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * Restrict prctl strictly to PR_SET_NAME (used by HotSpot VM for naming
+         * GC and compiler threads). Any other option (including PR_SET_DUMPABLE)
+         * is denied by default and terminates the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * JVM network denial: return EPERM for socket and setsockopt so that
+         * JVM internal dual-stack IPv6 probes during JNI_OnLoad (libnet.so)
+         * fail cleanly with permission denied without crashing the runtime.
+         * All network operations (connect, bind, listen, accept) remain
+         * default-denied and kill the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 0) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(setsockopt), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
         }
     }
 

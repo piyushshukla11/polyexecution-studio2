@@ -21,6 +21,9 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertIn(LanguageId.CPP, adapters)
         self.assertIn(LanguageId.PYTHON3, adapters)
         self.assertIn(LanguageId.BASH, adapters)
+        self.assertIn(LanguageId.JAVA, adapters)
+        self.assertIn(LanguageId.KOTLIN, adapters)
+        self.assertIn(LanguageId.SCALA, adapters)
         self.assertIn(LanguageId.GO, adapters)
         self.assertIn(LanguageId.RUST, adapters)
 
@@ -124,6 +127,48 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(rust_adapter.display_name, "Rust")
         self.assertFalse(rust_adapter.is_installed)
         self.assertEqual(rust_adapter.installed_version, "Not installed on host")
+
+    def test_java_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.JAVA)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.display_name, "Java")
+        self.assertEqual(adapter.family, RuntimeFamily.JVM)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.JVM)
+        self.assertTrue(adapter.is_installed)
+
+        # CompileSpec verification
+        self.assertIsNotNone(adapter.compile_spec)
+        assert adapter.compile_spec is not None
+        self.assertTrue(os.path.isabs(adapter.compile_spec.compiler_bin))
+        self.assertEqual(adapter.compile_spec.source_filename, "Solution.java")
+        self.assertEqual(adapter.compile_spec.artifact_output_name, "Solution.class")
+        self.assertEqual(adapter.compile_spec.seccomp_profile, SeccompPolicyProfile.JVM)
+        self.assertGreaterEqual(adapter.compile_spec.compile_resource_limits.memory_kb, 262144)
+
+        # ExecutionSpec verification
+        self.assertTrue(os.path.isabs(adapter.execution_spec.runner_bin))
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.java")
+        self.assertIn("Solution", adapter.execution_spec.execution_args)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.JVM)
+        self.assertGreaterEqual(adapter.execution_spec.default_resource_limits.memory_kb, 262144)
+
+    def test_uninstalled_jvm_stubs(self) -> None:
+        kotlin_adapter = self.registry.get(LanguageId.KOTLIN)
+        self.assertIsNotNone(kotlin_adapter)
+        assert kotlin_adapter is not None
+        self.assertEqual(kotlin_adapter.display_name, "Kotlin")
+        self.assertEqual(kotlin_adapter.family, RuntimeFamily.JVM)
+        self.assertFalse(kotlin_adapter.is_installed)
+        self.assertEqual(kotlin_adapter.installed_version, "Not installed on host")
+
+        scala_adapter = self.registry.get(LanguageId.SCALA)
+        self.assertIsNotNone(scala_adapter)
+        assert scala_adapter is not None
+        self.assertEqual(scala_adapter.display_name, "Scala")
+        self.assertEqual(scala_adapter.family, RuntimeFamily.JVM)
+        self.assertFalse(scala_adapter.is_installed)
+        self.assertEqual(scala_adapter.installed_version, "Not installed on host")
 
 
 if __name__ == "__main__":
