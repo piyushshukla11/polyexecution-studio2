@@ -8,7 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -16,6 +19,16 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef PR_SET_VMA
+#define PR_SET_VMA 0x53564d41
+#endif
+#ifndef PR_SET_VMA_ANON_NAME
+#define PR_SET_VMA_ANON_NAME 0
+#endif
+#ifndef PR_SET_THP_DISABLE
+#define PR_SET_THP_DISABLE 41
+#endif
 
 static int expect_sigsys(void (*fn)(void)) {
     pid_t pid = fork();
@@ -282,6 +295,125 @@ static void action_jvm_clone_user_blocked(void) {
 
 static void action_jvm_unshare_blocked(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_JVM) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
+static void action_ruby_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(mask), &mask) != 0) _exit(3);
+}
+
+static void action_ruby_eventfd2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    int fd = (int)syscall(SYS_eventfd2, 0, 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_ruby_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    int fd = (int)syscall(SYS_epoll_create1, 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_ruby_epoll_ctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    int pfd[2];
+    if (pipe2(pfd, O_CLOEXEC) != 0) _exit(4);
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.fd = pfd[0];
+    int rc = (int)syscall(SYS_epoll_ctl, epfd, EPOLL_CTL_ADD, pfd[0], &ev);
+    close(pfd[0]);
+    close(pfd[1]);
+    close(epfd);
+    if (rc != 0) _exit(5);
+}
+
+static void action_ruby_epoll_wait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_wait, epfd, &ev, 1, 0);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_ruby_epoll_pwait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_pwait, epfd, &ev, 1, 0, NULL);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_ruby_epoll_pwait2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    struct timespec ts = {0, 0};
+#ifdef SYS_epoll_pwait2
+    int nfds = (int)syscall(SYS_epoll_pwait2, epfd, &ev, 1, &ts, NULL);
+    close(epfd);
+    if (nfds < 0 && errno != ENOSYS) _exit(4);
+#else
+    close(epfd);
+#endif
+}
+
+static void action_ruby_prctl_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "ruby-worker") != 0) _exit(3);
+}
+
+static void action_ruby_prctl_thp_disable(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    /* arg2 == 1 is strictly permitted; kernel requires arg3=arg4=arg5=0 */
+    if (prctl(PR_SET_THP_DISABLE, 1UL, 0UL, 0UL, 0UL) != 0) _exit(3);
+}
+
+static void action_ruby_prctl_vma_anon(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    void *addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) _exit(2);
+    /* arg2 == PR_SET_VMA_ANON_NAME (0) is strictly permitted */
+    (void)prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (unsigned long)addr, 4096, (unsigned long)"ruby-gc");
+    munmap(addr, 4096);
+}
+
+static void action_ruby_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_ruby_prctl_thp_arg2_invalid_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    /* arg2 == 0 must be denied with SIGSYS */
+    prctl(PR_SET_THP_DISABLE, 0);
+}
+
+static void action_ruby_socket_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static void action_ruby_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_ruby_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_RUBY) != 0) _exit(2);
     unshare(CLONE_NEWUSER);
 }
 
@@ -578,9 +710,129 @@ int main(void) {
         return 1;
     }
 
+    /* Test 37: sched_getaffinity permitted under Ruby profile */
+    if (expect_success(action_ruby_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 38: eventfd2 permitted under Ruby profile */
+    if (expect_success(action_ruby_eventfd2)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits eventfd2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on eventfd2!\n");
+        return 1;
+    }
+
+    /* Test 39: epoll_create1 permitted under Ruby profile */
+    if (expect_success(action_ruby_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 40: epoll_ctl permitted under Ruby profile */
+    if (expect_success(action_ruby_epoll_ctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits epoll_ctl without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on epoll_ctl!\n");
+        return 1;
+    }
+
+    /* Test 41: epoll_wait permitted under Ruby profile */
+    if (expect_success(action_ruby_epoll_wait)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits epoll_wait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on epoll_wait!\n");
+        return 1;
+    }
+
+    /* Test 42: epoll_pwait permitted under Ruby profile */
+    if (expect_success(action_ruby_epoll_pwait)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits epoll_pwait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on epoll_pwait!\n");
+        return 1;
+    }
+
+    /* Test 43: epoll_pwait2 permitted under Ruby profile */
+    if (expect_success(action_ruby_epoll_pwait2)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits epoll_pwait2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on epoll_pwait2!\n");
+        return 1;
+    }
+
+    /* Test 44: prctl(PR_SET_NAME) permitted under Ruby profile */
+    if (expect_success(action_ruby_prctl_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 45: prctl(PR_SET_THP_DISABLE, 1) permitted under Ruby profile */
+    if (expect_success(action_ruby_prctl_thp_disable)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits prctl(PR_SET_THP_DISABLE, 1) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on prctl(PR_SET_THP_DISABLE, 1)!\n");
+        return 1;
+    }
+
+    /* Test 46: prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) permitted under Ruby profile */
+    if (expect_success(action_ruby_prctl_vma_anon)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY permits prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY failed on prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 47: prctl(PR_SET_DUMPABLE) blocked under Ruby profile */
+    if (expect_sigsys(action_ruby_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 48: prctl(PR_SET_THP_DISABLE, 0) blocked under Ruby profile */
+    if (expect_sigsys(action_ruby_prctl_thp_arg2_invalid_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY kills prctl(PR_SET_THP_DISABLE, 0) with SIGSYS (restricted to 1)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY permitted prctl(PR_SET_THP_DISABLE, 0)!\n");
+        return 1;
+    }
+
+    /* Test 49: socket() blocked under Ruby profile */
+    if (expect_sigsys(action_ruby_socket_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY kills socket() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY permitted socket()!\n");
+        return 1;
+    }
+
+    /* Test 50: CLONE_NEWUSER blocked under Ruby profile */
+    if (expect_sigsys(action_ruby_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 51: unshare blocked under Ruby profile */
+    if (expect_sigsys(action_ruby_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_RUBY kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_RUBY permitted unshare()!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 36 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 51 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

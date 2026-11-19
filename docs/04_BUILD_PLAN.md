@@ -58,10 +58,18 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
 
 ### Phase 5: Interpreted & Managed Scripting Languages
 - Target runtimes: **JavaScript (`Node.js`), TypeScript (`tsc`), Ruby, PHP, Python 2, Dart, Swift, Racket, Erlang, Elixir, C# (.NET)**.
-- Implement specialized memory allocation rules (e.g. 5,120 MiB virtual address space for Node/V8 pointer compression cages).
-- Single-pass TypeScript transpilation and execution.
-- Erlang/Elixir BEAM VM lightweight process management.
-- .NET runtime and JIT execution configuration.
+- Slice 1: **Ruby (`ruby`) vertical slice**:
+  - Implemented single-stage isolated interpreted execution (`/usr/bin/ruby /workspace/Solution.rb`).
+  - Truthful milestone emissions: `ACCEPTED` -> `RUNNING` -> `COMPLETED` / `RUNTIME_ERROR` (never emits `COMPILING`).
+  - Default resource bounds: 2,000 ms CPU timeout, 5,000 ms wall timeout, 64 MiB cgroup memory limit, 32 PIDs limit, 64 KiB output cap.
+  - Native sandbox profile: dedicated `SECCOMP_PROFILE_RUBY` profile permitting narrow initialization syscalls (`sched_getaffinity`, `eventfd2`, `epoll_create1`/polling) and narrowly scoped `prctl` operations (`PR_SET_NAME`, `PR_SET_THP_DISABLE`, `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME`) while maintaining default-deny for all network (`socket`, `connect`, etc.) and namespace operations (`clone` namespace flags, `unshare`).
+- Truthful unsupported runtime status:
+  - Node.js (`javascript`): installed on host under user-space shims (`~/.local/share/mise`), but excluded from the sandbox rootfs (`/home` is unmounted); truthfully reported as `Unavailable to sandbox rootfs (installed in user path)` and marked unsupported.
+  - C# (.NET) (`csharp`): launcher present at `/usr/bin/dotnet`, but no .NET SDK is installed on the host (`dotnet --version` fails); truthfully reported as `Incomplete toolchain on host (launcher present, but SDK check failed)` and marked unsupported.
+  - Kotlin (`kotlin`): installed in user-space mise path, but excluded from sandbox rootfs; truthfully reported as `Unavailable to sandbox rootfs (installed in user path)` and marked unsupported.
+  - TypeScript (`typescript`), PHP (`php`), Python 2 (`python2`), Dart (`dart`), Swift (`swift`), Racket (`racket`), Erlang (`erlang`), Elixir (`elixir`), Scala (`scala`), Go (`go`), Rust (`rust`): toolchains completely absent on host; truthfully reported as `Not installed on host`.
+- Managed runtime memory notes:
+  - V8 virtual address cages: V8 uses pointer compression virtual address reservations; cgroup accounting measures resident anonymous memory and page cache rather than virtual reservations. Physical cgroup limits should not be inflated for virtual address layouts without live resident memory evidence.
 
 ### Phase 6: Disposable SQL Database Sandboxes
 - Target engines: **MySQL, PostgreSQL, MS SQL Server, Oracle SQL**.

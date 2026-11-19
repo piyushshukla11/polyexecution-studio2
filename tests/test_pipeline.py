@@ -677,6 +677,184 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertIn("inner", nested_res.stdout)
         self.assertIn("lambda-executed", nested_res.stdout)
 
+    def test_ruby_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 35, 20, 16384, "hello ruby\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-rb-1",
+            language_id=LanguageId.RUBY,
+            source_code="puts 'hello ruby'\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.stdout, "hello ruby\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        # Truthful emission: Direct interpreted Ruby must NEVER emit COMPILING
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        self.assertTrue(self.runner.invocations[0]["target_bin"].endswith("ruby"))
+        self.assertEqual(self.runner.invocations[0]["seccomp_profile"], SeccompPolicyProfile.RUBY)
+        self.assertEqual(self.runner.invocations[0]["target_argv"], ["/workspace/Solution.rb"])
+
+    def test_ruby_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 25, 15, 12288, "", "Solution.rb:1: syntax error\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-rb-err",
+            language_id=LanguageId.RUBY,
+            source_code="def broken(\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("syntax error", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
+    def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
+        unsupported = [
+            LanguageId.JAVASCRIPT,
+            LanguageId.TYPESCRIPT,
+            LanguageId.PHP,
+            LanguageId.PYTHON2,
+            LanguageId.DART,
+            LanguageId.SWIFT,
+            LanguageId.RACKET,
+            LanguageId.ERLANG,
+            LanguageId.ELIXIR,
+            LanguageId.CSHARP,
+        ]
+        for lang_id in unsupported:
+            req = ExecutionRequest(
+                request_id=f"req-unsupported-{lang_id.value}",
+                language_id=lang_id,
+                source_code="print('hello')\n",
+            )
+            res = self.pipeline.execute(req)
+            self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+            self.assertIn("is not installed on this host", res.stderr)
+            self.assertEqual(len(self.runner.invocations), 0)
+
+    def test_live_ruby_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal Ruby execution
+        ok_req = ExecutionRequest(
+            request_id="req-live-ruby-ok",
+            language_id=LanguageId.RUBY,
+            source_code="puts 'live ruby sandboxed'\n",
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertEqual(ok_res.stdout.strip(), "live ruby sandboxed")
+        milestone_names = [m.milestone for m in ok_res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.RUNNING, Milestone.COMPLETED])
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
+        # 2. Syntax error handling
+        err_req = ExecutionRequest(
+            request_id="req-live-ruby-syntax-err",
+            language_id=LanguageId.RUBY,
+            source_code="def broken(\n",
+        )
+        err_res = pipeline.execute(err_req)
+        self.assertEqual(err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(err_res.exit_code, 1)
+        self.assertIn("syntax error", err_res.stderr)
+
+        # 3. Wall timeout containment
+        timeout_req = ExecutionRequest(
+            request_id="req-live-ruby-timeout",
+            language_id=LanguageId.RUBY,
+            source_code="sleep 10\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=65536, pids=16, max_output_bytes=65536),
+        )
+        timeout_res = pipeline.execute(timeout_req)
+        self.assertEqual(timeout_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement
+        mem_req = ExecutionRequest(
+            request_id="req-live-ruby-oom",
+            language_id=LanguageId.RUBY,
+            source_code="arr = []; loop { arr << ('x' * 1024 * 1024) }\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=2000, memory_kb=32768, pids=16, max_output_bytes=65536),
+        )
+        mem_res = pipeline.execute(mem_req)
+        self.assertEqual(mem_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(mem_res.signal, 9)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-ruby-socket-blocked",
+            language_id=LanguageId.RUBY,
+            source_code="require 'socket'; TCPSocket.new('1.1.1.1', 80)\n",
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Fiber scheduler execution inside sandbox
+        fiber_src = (
+            "f = Fiber.new do |val|\n"
+            "  Fiber.yield val * 2\n"
+            "  'done'\n"
+            "end\n"
+            "res1 = f.resume(21)\n"
+            "res2 = f.resume\n"
+            "puts \"Fiber-Result: #{res1}, #{res2}\"\n"
+        )
+        fiber_req = ExecutionRequest(
+            request_id="req-live-ruby-fiber",
+            language_id=LanguageId.RUBY,
+            source_code=fiber_src,
+        )
+        fiber_res = pipeline.execute(fiber_req)
+        self.assertEqual(fiber_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(fiber_res.exit_code, 0)
+        self.assertIn("Fiber-Result: 42, done", fiber_res.stdout)
+
+        # 7. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

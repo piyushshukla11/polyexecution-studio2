@@ -66,6 +66,7 @@ class SeccompPolicyProfile(str, Enum):
     JVM = "jvm"
     JVM_PERMISSIVE = "jvm_permissive"
     V8_NODE = "v8_node"
+    RUBY = "ruby"
 
 
 MAX_SOURCE_BYTES: int = 65536
@@ -135,7 +136,10 @@ class RuntimeAdapter:
 
     @property
     def is_installed(self) -> bool:
-        return bool(self.installed_version) and not self.installed_version.startswith("Not installed")
+        if not self.installed_version:
+            return False
+        unsupported_markers = ("Not installed", "Unavailable", "Incomplete")
+        return not any(self.installed_version.startswith(m) for m in unsupported_markers)
 
     def resolve_execution_limits(
         self, custom_limits: Optional[ResourceLimits] = None

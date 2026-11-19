@@ -18,8 +18,18 @@ from engine.models import (
 
 
 def detect_tool_version(binary_path: str, version_arg: str = "--version") -> str:
-    """Safely inspect host installed version for honest reporting."""
-    if not os.path.exists(binary_path) and not shutil.which(binary_path):
+    """Safely inspect host installed version for honest reporting.
+    Truthfully reports:
+    - Toolchains installed in user-space paths (e.g. mise) that are unavailable to the sandbox rootfs.
+    - Host launchers present without a functional runtime/SDK (incomplete toolchains).
+    - Toolchains completely absent on the host.
+    - Verified installed toolchains accessible inside the sandbox.
+    """
+    if not os.path.exists(binary_path):
+        basename = os.path.basename(binary_path)
+        user_path = shutil.which(basename)
+        if user_path:
+            return f"Unavailable to sandbox rootfs (installed in user path: {user_path})"
         return "Not installed on host"
     try:
         proc = subprocess.run(
@@ -29,10 +39,14 @@ def detect_tool_version(binary_path: str, version_arg: str = "--version") -> str
             timeout=2,
             check=False,
         )
+        if proc.returncode != 0:
+            first_err = (proc.stderr.splitlines()[0] if proc.stderr else proc.stdout.splitlines()[0] if proc.stdout else "").strip()
+            err_msg = f": {first_err}" if first_err else ""
+            return f"Incomplete toolchain on host (launcher present at {binary_path}, but SDK check failed{err_msg})"
         first_line = proc.stdout.splitlines()[0] if proc.stdout else proc.stderr.splitlines()[0] if proc.stderr else ""
         return first_line.strip() if first_line else "Installed (version unknown)"
-    except Exception:
-        return "Installed (version query failed)"
+    except Exception as exc:
+        return f"Incomplete toolchain on host (inspection error: {exc})"
 
 
 class RuntimeRegistry:
@@ -339,3 +353,211 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(rust_adapter)
+
+        # Tier 5 Interpreted Runtimes: Ruby (Vertical Slice 1)
+        ruby_bin = "/usr/bin/ruby" if os.path.exists("/usr/bin/ruby") else shutil.which("ruby") or "/usr/bin/ruby"
+        ruby_adapter = RuntimeAdapter(
+            id=LanguageId.RUBY,
+            display_name="Ruby",
+            official_version="Ruby 3.4 (CRuby)",
+            installed_version=detect_tool_version(ruby_bin),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=ruby_bin,
+                execution_args=["/workspace/Solution.rb"],
+                source_filename="Solution.rb",
+                default_resource_limits=ResourceLimits(
+                    cpu_ms=2000,
+                    wall_ms=5000,
+                    memory_kb=65536,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.RUBY,
+            ),
+            seccomp_policy=SeccompPolicyProfile.RUBY,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(ruby_adapter)
+
+        # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
+        js_adapter = RuntimeAdapter(
+            id=LanguageId.JAVASCRIPT,
+            display_name="JavaScript (Node.js)",
+            official_version="Node.js LTS (v20+)",
+            installed_version=detect_tool_version("/usr/bin/node"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/node",
+                execution_args=["/workspace/solution.js"],
+                source_filename="solution.js",
+                seccomp_profile=SeccompPolicyProfile.V8_NODE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.V8_NODE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(js_adapter)
+
+        ts_adapter = RuntimeAdapter(
+            id=LanguageId.TYPESCRIPT,
+            display_name="TypeScript",
+            official_version="TypeScript 5.x",
+            installed_version=detect_tool_version("/usr/bin/tsc"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/tsc",
+                execution_args=[],
+                source_filename="solution.ts",
+                seccomp_profile=SeccompPolicyProfile.V8_NODE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.V8_NODE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(ts_adapter)
+
+        php_adapter = RuntimeAdapter(
+            id=LanguageId.PHP,
+            display_name="PHP",
+            official_version="PHP 8.3",
+            installed_version=detect_tool_version("/usr/bin/php"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/php",
+                execution_args=["/workspace/solution.php"],
+                source_filename="solution.php",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(php_adapter)
+
+        py2_adapter = RuntimeAdapter(
+            id=LanguageId.PYTHON2,
+            display_name="Python 2",
+            official_version="Python 2.7 (Legacy)",
+            installed_version=detect_tool_version("/usr/bin/python2"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/python2",
+                execution_args=["/workspace/solution.py"],
+                source_filename="solution.py",
+                seccomp_profile=SeccompPolicyProfile.PYTHON,
+            ),
+            seccomp_policy=SeccompPolicyProfile.PYTHON,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(py2_adapter)
+
+        dart_adapter = RuntimeAdapter(
+            id=LanguageId.DART,
+            display_name="Dart",
+            official_version="Dart 3.x",
+            installed_version=detect_tool_version("/usr/bin/dart"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/dart",
+                execution_args=[],
+                source_filename="solution.dart",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(dart_adapter)
+
+        swift_adapter = RuntimeAdapter(
+            id=LanguageId.SWIFT,
+            display_name="Swift",
+            official_version="Swift 6.x",
+            installed_version=detect_tool_version("/usr/bin/swift"),
+            family=RuntimeFamily.NATIVE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/swift",
+                execution_args=[],
+                source_filename="solution.swift",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(swift_adapter)
+
+        racket_adapter = RuntimeAdapter(
+            id=LanguageId.RACKET,
+            display_name="Racket",
+            official_version="Racket 8.x",
+            installed_version=detect_tool_version("/usr/bin/racket"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/racket",
+                execution_args=[],
+                source_filename="solution.rkt",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(racket_adapter)
+
+        erlang_adapter = RuntimeAdapter(
+            id=LanguageId.ERLANG,
+            display_name="Erlang",
+            official_version="Erlang/OTP 27",
+            installed_version=detect_tool_version("/usr/bin/erl"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/erl",
+                execution_args=[],
+                source_filename="solution.erl",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(erlang_adapter)
+
+        elixir_adapter = RuntimeAdapter(
+            id=LanguageId.ELIXIR,
+            display_name="Elixir",
+            official_version="Elixir 1.17",
+            installed_version=detect_tool_version("/usr/bin/elixir"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/elixir",
+                execution_args=[],
+                source_filename="solution.exs",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(elixir_adapter)
+
+        csharp_adapter = RuntimeAdapter(
+            id=LanguageId.CSHARP,
+            display_name="C# (.NET)",
+            official_version=".NET 9.0 SDK",
+            installed_version=detect_tool_version("/usr/bin/dotnet"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/dotnet",
+                execution_args=[],
+                source_filename="Program.cs",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(csharp_adapter)
