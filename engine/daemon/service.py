@@ -2,6 +2,7 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import os
 import threading
 from typing import AsyncIterator, Optional
 
@@ -14,6 +15,7 @@ from engine.models import (
     Milestone,
     MilestoneEvent,
     ResourceLimits,
+    RuntimeFamily,
 )
 from engine.pipeline import ExecutionPipeline
 from engine.registry import RuntimeRegistry
@@ -92,6 +94,135 @@ def proto_to_execution_request(req: execution_pb2.ExecuteRequest) -> ExecutionRe
     )
 
 
+def detect_cgroup_memory_limit_kb(
+    proc_cgroup_path: str = "/proc/self/cgroup",
+    cgroup_root: str = "/sys/fs/cgroup",
+) -> Optional[int]:
+    """Inspects cgroups v2 and v1 hierarchies to detect effective memory limits on the daemon process.
+
+    Returns the minimum detected limit in KiB, or None if unconstrained.
+    """
+    limit_bytes: Optional[int] = None
+
+    # Check cgroup v2
+    # 1. Direct container root memory.max
+    root_v2 = os.path.join(cgroup_root, "memory.max")
+    if os.path.exists(root_v2):
+        try:
+            with open(root_v2, "r") as f:
+                val = f.read().strip()
+                if val and val != "max":
+                    limit_bytes = int(val)
+        except (ValueError, OSError):
+            pass
+
+    # 2. Check process cgroup path hierarchy from /proc/self/cgroup
+    if os.path.exists(proc_cgroup_path):
+        try:
+            cgroup_rel = None
+            with open(proc_cgroup_path, "r") as f:
+                for line in f:
+                    parts = line.strip().split("::")
+                    if len(parts) == 2:
+                        cgroup_rel = parts[1].strip()
+                        break
+            if cgroup_rel:
+                cur = cgroup_rel.lstrip("/")
+                while cur and cur != ".":
+                    p = os.path.join(cgroup_root, cur, "memory.max")
+                    if os.path.exists(p):
+                        try:
+                            with open(p, "r") as f:
+                                val = f.read().strip()
+                                if val and val != "max":
+                                    cand = int(val)
+                                    limit_bytes = cand if limit_bytes is None else min(limit_bytes, cand)
+                        except (ValueError, OSError):
+                            pass
+                    cur = os.path.dirname(cur)
+        except OSError:
+            pass
+
+    # Check cgroup v1 fallback
+    v1_paths = [
+        os.path.join(cgroup_root, "memory", "memory.limit_in_bytes"),
+        os.path.join(cgroup_root, "memory.limit_in_bytes"),
+    ]
+    for p in v1_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    val = f.read().strip()
+                    if val:
+                        cand = int(val)
+                        # cgroup v1 unconstrained limit is typically near max int64
+                        if cand < (1 << 60):
+                            limit_bytes = cand if limit_bytes is None else min(limit_bytes, cand)
+            except (ValueError, OSError):
+                pass
+
+    if limit_bytes is not None and limit_bytes > 0:
+        return limit_bytes // 1024
+    return None
+
+
+def derive_default_memory_budget_kb(
+    operator_budget_mb: Optional[int] = None,
+    total_physical_kb: Optional[int] = None,
+    cgroup_limit_kb: Optional[int] = None,
+) -> int:
+    """Derives a safe execution memory budget in KiB.
+
+    If operator_budget_mb is explicitly provided (> 0), returns operator_budget_mb * 1024.
+    Otherwise:
+      1. Determines effective host memory: the minimum of host physical RAM and any active cgroup limit.
+      2. Enforces safe headroom:
+         - For environments with >= 4 GiB effective memory: reserves at least 25% or 1024 MiB headroom.
+         - For smaller environments (< 4 GiB): reserves at least 25% headroom (min 64 MiB for daemon RSS).
+      3. Calculates available memory = effective_total - headroom.
+         If available memory is non-positive, raises ValueError requiring an explicit operator budget.
+      4. Caps the default budget at 4 GiB (4194304 KiB) or available memory, strictly honoring headroom.
+    """
+    if operator_budget_mb is not None and operator_budget_mb > 0:
+        return operator_budget_mb * 1024
+
+    # Determine host physical memory
+    if total_physical_kb is None:
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            phys_pages = os.sysconf("SC_PHYS_PAGES")
+            total_physical_kb = (page_size * phys_pages) // 1024
+        except (AttributeError, ValueError, OSError):
+            total_physical_kb = 4194304  # Fallback baseline: 4 GiB
+
+    # Determine cgroup limit
+    if cgroup_limit_kb is None:
+        cgroup_limit_kb = detect_cgroup_memory_limit_kb()
+
+    # Effective total memory is bounded by physical RAM and cgroup quota
+    effective_total_kb = total_physical_kb
+    if cgroup_limit_kb is not None and cgroup_limit_kb > 0:
+        effective_total_kb = min(effective_total_kb, cgroup_limit_kb)
+
+    # Calculate safe headroom:
+    # On systems >= 4 GiB, reserve at least 1024 MiB (or 25%, whichever is greater).
+    # On systems < 4 GiB, reserve 25% (with at least 64 MiB for the daemon process itself).
+    if effective_total_kb >= 4194304:
+        headroom_kb = max(1048576, effective_total_kb // 4)
+    else:
+        headroom_kb = max(65536, effective_total_kb // 4)
+
+    available_kb = effective_total_kb - headroom_kb
+    if available_kb <= 0:
+        raise ValueError(
+            f"Insufficient host or cgroup memory to derive a safe execution budget "
+            f"(effective memory: {effective_total_kb} KB, required headroom: {headroom_kb} KB). "
+            f"An explicit execution budget must be configured via --memory-mb."
+        )
+
+    return min(4194304, available_kb)
+
+
 class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer):
     """Asynchronous worker servicer bridging gRPC RPCs to ExecutionPipeline."""
 
@@ -100,15 +231,45 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         pipeline: ExecutionPipeline,
         max_workers: int = 8,
         max_capacity: int = 16,
+        max_memory_kb: Optional[int] = None,
         executor: Optional[ThreadPoolExecutor] = None,
     ) -> None:
         self.pipeline = pipeline
         self.registry = pipeline.registry
         self.max_workers = max_workers
         self.max_capacity = max_capacity
+        self.max_memory_kb = (
+            max_memory_kb
+            if max_memory_kb is not None and max_memory_kb > 0
+            else derive_default_memory_budget_kb()
+        )
         self._executor = executor or ThreadPoolExecutor(max_workers=max_workers)
         self._active_workers = 0
+        self._allocated_memory_kb = 0
         self._lock = asyncio.Lock()
+
+    def _release_capacity(self, req_memory_kb: int) -> None:
+        """Atomically releases worker capacity and memory allocation on the event loop."""
+        self._active_workers = max(0, self._active_workers - 1)
+        self._allocated_memory_kb = max(0, self._allocated_memory_kb - req_memory_kb)
+
+    def _estimate_request_memory_kb(self, request: execution_pb2.ExecuteRequest) -> int:
+        adapter = self.registry.get_by_name(request.language_id)
+        compile_mem = 0
+        if adapter and adapter.compile_spec:
+            compile_mem = adapter.compile_spec.compile_resource_limits.memory_kb
+
+        if request.HasField("custom_limits") and request.custom_limits.memory_kb > 0:
+            exec_mem = request.custom_limits.memory_kb
+        elif adapter:
+            exec_mem = adapter.execution_spec.default_resource_limits.memory_kb
+        else:
+            exec_mem = 65536
+
+        if adapter and adapter.family == RuntimeFamily.JVM:
+            exec_mem = max(exec_mem, 196608)
+
+        return max(compile_mem, exec_mem)
 
     async def ExecuteSync(
         self,
@@ -116,13 +277,20 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         context: grpc.aio.ServicerContext,
     ) -> execution_pb2.ExecutionResult:
         """Executes request synchronously off the asyncio event loop with admission control and cancellation."""
+        req_memory_kb = self._estimate_request_memory_kb(request)
         async with self._lock:
             if self._active_workers >= self.max_capacity:
                 await context.abort(
                     grpc.StatusCode.RESOURCE_EXHAUSTED,
                     f"Worker daemon capacity exceeded (active {self._active_workers} >= max {self.max_capacity}). Request rejected.",
                 )
+            if self._allocated_memory_kb + req_memory_kb > self.max_memory_kb:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    f"Worker daemon host memory capacity exceeded (requested {req_memory_kb} KB, allocated {self._allocated_memory_kb} KB of max {self.max_memory_kb} KB). Request rejected.",
+                )
             self._active_workers += 1
+            self._allocated_memory_kb += req_memory_kb
 
         cancel_token = threading.Event()
 
@@ -131,10 +299,21 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
 
         context.add_done_callback(on_done)
 
+        loop = asyncio.get_running_loop()
+        fut = None
+        released = False
+
+        def on_fut_done(_f) -> None:
+            nonlocal released
+            if not released:
+                released = True
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(self._release_capacity, req_memory_kb)
+
         try:
             domain_req = proto_to_execution_request(request)
-            loop = asyncio.get_running_loop()
             fut = self._executor.submit(self.pipeline.execute, domain_req, None, cancel_token)
+            fut.add_done_callback(on_fut_done)
             result = await asyncio.wrap_future(fut)
             return execution_result_to_proto(result)
         except Exception as exc:
@@ -150,8 +329,16 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
             )
         finally:
             cancel_token.set()
-            async with self._lock:
-                self._active_workers -= 1
+            if fut is not None:
+                # Hold memory reservation and worker slot until the executor future finishes cleanup
+                try:
+                    await asyncio.shield(asyncio.wrap_future(fut))
+                except (Exception, asyncio.CancelledError):
+                    pass
+            else:
+                if not released:
+                    released = True
+                    self._release_capacity(req_memory_kb)
 
     async def ExecuteStream(
         self,
@@ -159,13 +346,20 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[execution_pb2.ExecutionProgressEvent]:
         """Streams live milestone events in real time followed by the final execution result with cancellation support."""
+        req_memory_kb = self._estimate_request_memory_kb(request)
         async with self._lock:
             if self._active_workers >= self.max_capacity:
                 await context.abort(
                     grpc.StatusCode.RESOURCE_EXHAUSTED,
                     f"Worker daemon capacity exceeded (active {self._active_workers} >= max {self.max_capacity}). Request rejected.",
                 )
+            if self._allocated_memory_kb + req_memory_kb > self.max_memory_kb:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    f"Worker daemon host memory capacity exceeded (requested {req_memory_kb} KB, allocated {self._allocated_memory_kb} KB of max {self.max_memory_kb} KB). Request rejected.",
+                )
             self._active_workers += 1
+            self._allocated_memory_kb += req_memory_kb
 
         cancel_token = threading.Event()
 
@@ -176,6 +370,15 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
 
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        fut = None
+        released = False
+
+        def on_fut_done(_f) -> None:
+            nonlocal released
+            if not released:
+                released = True
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(self._release_capacity, req_memory_kb)
 
         def on_milestone(event: MilestoneEvent) -> None:
             if not loop.is_closed():
@@ -187,6 +390,7 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
         try:
             domain_req = proto_to_execution_request(request)
             fut = self._executor.submit(run_execution, domain_req)
+            fut.add_done_callback(on_fut_done)
 
             def on_done(f) -> None:
                 try:
@@ -220,8 +424,16 @@ class ExecutionWorkerServicer(execution_pb2_grpc.ExecutionWorkerServiceServicer)
                     break
         finally:
             cancel_token.set()
-            async with self._lock:
-                self._active_workers -= 1
+            if fut is not None:
+                # Hold memory reservation and worker slot until the executor future finishes cleanup
+                try:
+                    await asyncio.shield(asyncio.wrap_future(fut))
+                except (Exception, asyncio.CancelledError):
+                    pass
+            else:
+                if not released:
+                    released = True
+                    self._release_capacity(req_memory_kb)
 
     async def GetSupportedRuntimes(
         self,

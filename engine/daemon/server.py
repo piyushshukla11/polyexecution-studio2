@@ -9,7 +9,7 @@ from typing import Optional, Tuple
 
 import grpc
 
-from engine.daemon.service import ExecutionWorkerServicer
+from engine.daemon.service import ExecutionWorkerServicer, derive_default_memory_budget_kb
 from engine.pipeline import ExecutionPipeline
 from engine.registry import RuntimeRegistry
 from engine.runner import NativeSandboxRunner
@@ -26,6 +26,7 @@ def create_server(
     port: int = 50051,
     max_workers: int = 8,
     max_capacity: int = 16,
+    max_memory_kb: Optional[int] = None,
     pipeline: Optional[ExecutionPipeline] = None,
 ) -> Tuple[grpc.aio.Server, int]:
     """Creates and configures an asynchronous gRPC worker daemon server.
@@ -41,7 +42,12 @@ def create_server(
         runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner")
         pipeline = ExecutionPipeline(registry=registry, runner=runner)
 
-    servicer = ExecutionWorkerServicer(pipeline=pipeline, max_workers=max_workers, max_capacity=max_capacity)
+    servicer = ExecutionWorkerServicer(
+        pipeline=pipeline,
+        max_workers=max_workers,
+        max_capacity=max_capacity,
+        max_memory_kb=max_memory_kb,
+    )
 
     server = grpc.aio.server(
         options=[
@@ -61,6 +67,7 @@ async def run_server(
     port: int = 50051,
     max_workers: int = 8,
     max_capacity: int = 16,
+    max_memory_kb: Optional[int] = None,
     pipeline: Optional[ExecutionPipeline] = None,
 ) -> None:
     """Starts the gRPC server and waits until terminated."""
@@ -69,6 +76,7 @@ async def run_server(
         port=port,
         max_workers=max_workers,
         max_capacity=max_capacity,
+        max_memory_kb=max_memory_kb,
         pipeline=pipeline,
     )
     await server.start()
@@ -87,6 +95,12 @@ def main(args_list: Optional[list] = None) -> int:
     parser.add_argument("--port", type=int, default=50051, help="Bind port (0 for random ephemeral port)")
     parser.add_argument("--workers", type=int, default=8, help="Maximum worker pool concurrency")
     parser.add_argument("--capacity", type=int, default=16, help="Maximum total active and queued request capacity")
+    parser.add_argument(
+        "--memory-mb",
+        type=int,
+        default=None,
+        help="Operator-configured host memory execution budget in MiB (defaults to safe budget derived from host memory with headroom)",
+    )
     parser.add_argument("--cgroup-root", default=None, help="Explicit cgroups v2 root path")
 
     args = parser.parse_args(args_list)
@@ -106,12 +120,19 @@ def main(args_list: Optional[list] = None) -> int:
     )
 
     try:
+        max_memory_kb = derive_default_memory_budget_kb(args.memory_mb)
+    except ValueError as err:
+        sys.stderr.write(f"Error: {err}\n")
+        return 2
+
+    try:
         asyncio.run(
             run_server(
                 host=args.host,
                 port=args.port,
                 max_workers=args.workers,
                 max_capacity=args.capacity,
+                max_memory_kb=max_memory_kb,
             )
         )
         return 0

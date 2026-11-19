@@ -30,6 +30,10 @@ class ArtifactCreatingMockRunner(MockSandboxRunner):
                 with open(out_path, "w") as f:
                     f.write("#!/bin/sh\n")
                 os.chmod(out_path, 0o755)
+            elif target_bin.endswith("javac"):
+                out_path = os.path.join(workspace, "Solution.class")
+                with open(out_path, "wb") as f:
+                    f.write(b"\xca\xfe\xba\xbe")
         return res
 
 
@@ -489,6 +493,189 @@ class TestExecutionPipeline(unittest.TestCase):
         rust_res = self.pipeline.execute(rust_req)
         self.assertEqual(rust_res.final_status, Milestone.SANDBOX_ERROR)
         self.assertIn("Toolchain for 'rust' is not installed", rust_res.stderr)
+
+    def test_java_success_milestones(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 300, 250, 65536, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 80, 50, 32768, "hello from java\n", "")
+        )
+
+        request = ExecutionRequest(
+            request_id="req-java-1",
+            language_id=LanguageId.JAVA,
+            source_code="public class Solution { public static void main(String[] args) { System.out.println(\"hello from java\"); } }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello from java\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+        # Stage 1: javac compiler
+        self.assertTrue(self.runner.invocations[0]["target_bin"].endswith("javac"))
+        self.assertEqual(self.runner.invocations[0]["seccomp_profile"], SeccompPolicyProfile.JVM)
+        # Stage 2: java runtime
+        self.assertTrue(self.runner.invocations[1]["target_bin"].endswith("java"))
+        self.assertEqual(self.runner.invocations[1]["seccomp_profile"], SeccompPolicyProfile.JVM)
+        self.assertIn("Solution", self.runner.invocations[1]["target_argv"])
+
+    def test_java_compile_error(self) -> None:
+        compile_err_msg = "/workspace/Solution.java:1: error: ';' expected"
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 150, 100, 49152, "", compile_err_msg)
+        )
+
+        request = ExecutionRequest(
+            request_id="req-java-err",
+            language_id=LanguageId.JAVA,
+            source_code="public class Solution { int x }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("error: ';' expected", res.compile_output or "")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 1)
+
+    def test_uninstalled_kotlin_scala_fail_safely(self) -> None:
+        # Requesting Kotlin
+        kt_req = ExecutionRequest(
+            request_id="req-kt",
+            language_id=LanguageId.KOTLIN,
+            source_code="fun main() {}\n",
+        )
+        kt_res = self.pipeline.execute(kt_req)
+        self.assertEqual(kt_res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("Toolchain for 'kotlin' is not installed", kt_res.stderr)
+
+        # Requesting Scala
+        sc_req = ExecutionRequest(
+            request_id="req-sc",
+            language_id=LanguageId.SCALA,
+            source_code="@main def main(): Unit = ()\n",
+        )
+        sc_res = self.pipeline.execute(sc_req)
+        self.assertEqual(sc_res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("Toolchain for 'scala' is not installed", sc_res.stderr)
+
+    def test_dynamic_jvm_memory_baseline_admission(self) -> None:
+        adapter = self.registry.get(LanguageId.JAVA)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+
+        # Case 1: Custom limits with memory smaller than JVM baseline (64 MiB requested)
+        tight_limits = ResourceLimits(memory_kb=65536)
+        args, limits = adapter.resolve_execution_limits(tight_limits)
+        # Must be elevated to at least 192 MiB to avoid immediate VM startup abort
+        self.assertGreaterEqual(limits.memory_kb, 196608)
+        # Heap must be dynamically sized to match available space above metaspace reserve
+        self.assertTrue(any(a.startswith("-Xmx") for a in args))
+        xmx_arg = [a for a in args if a.startswith("-Xmx")][0]
+        self.assertEqual(xmx_arg, "-Xmx64m")
+
+        # Case 2: Custom limits with high memory (512 MiB requested)
+        high_limits = ResourceLimits(memory_kb=524288)
+        args_high, limits_high = adapter.resolve_execution_limits(high_limits)
+        self.assertEqual(limits_high.memory_kb, 524288)
+        xmx_high = [a for a in args_high if a.startswith("-Xmx")][0]
+        # (524288 - 131072) // 1024 = 384m
+        self.assertEqual(xmx_high, "-Xmx384m")
+
+    def test_live_java_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # Normal Java execution
+        req = ExecutionRequest(
+            request_id="req-live-java-ok",
+            language_id=LanguageId.JAVA,
+            source_code="public class Solution { public static void main(String[] args) { System.out.println(\"live java sandboxed\"); } }\n",
+        )
+        res = pipeline.execute(req)
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout.strip(), "live java sandboxed")
+
+        # Evil network Java execution
+        evil_req = ExecutionRequest(
+            request_id="req-live-java-evil",
+            language_id=LanguageId.JAVA,
+            source_code="public class Solution { public static void main(String[] args) throws Exception { new java.net.Socket(\"1.1.1.1\", 80); } }\n",
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+        # Multi-class, nested classes, and lambdas validation under directory classpath handoff
+        nested_src = (
+            "public class Solution {\n"
+            "    static class StaticNested {\n"
+            "        String greet() { return \"nested-static\"; }\n"
+            "    }\n"
+            "    class Inner {\n"
+            "        String greet() { return \"inner\"; }\n"
+            "    }\n"
+            "    public static void main(String[] args) {\n"
+            "        Runnable lambda = () -> System.out.println(\"lambda-executed\");\n"
+            "        System.out.println(new StaticNested().greet());\n"
+            "        System.out.println(new Solution().new Inner().greet());\n"
+            "        lambda.run();\n"
+            "    }\n"
+            "}\n"
+        )
+        nested_req = ExecutionRequest(
+            request_id="req-live-java-nested",
+            language_id=LanguageId.JAVA,
+            source_code=nested_src,
+        )
+        nested_res = pipeline.execute(nested_req)
+        self.assertEqual(nested_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(nested_res.exit_code, 0)
+        self.assertIn("nested-static", nested_res.stdout)
+        self.assertIn("inner", nested_res.stdout)
+        self.assertIn("lambda-executed", nested_res.stdout)
 
 
 if __name__ == "__main__":

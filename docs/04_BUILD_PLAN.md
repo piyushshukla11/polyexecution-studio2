@@ -29,16 +29,32 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
 
 ### Phase 3: Systems Runtimes & gRPC Worker Daemon
 - Target runtimes: **Go (`go`), Rust (`rustc`), Bash (`bash`)**.
-- Implement Kotlin/Rust gRPC worker daemon managing job queues, timeouts, and execution workspaces.
-- Handle Go compilation cache and runtime thread limits (`GOMAXPROCS`).
-- Handle Rust compiler memory overhead and single-binary bytecode artifacts.
-- Handle Bash subshell isolation, command restrictions, and fork limits.
+- Shipped Python `grpc.aio` Worker Daemon architecture:
+  - Asynchronous gRPC service (`ExecuteStream`) streaming real-time milestones and returning execution results with telemetry.
+  - Off-loop non-blocking sandbox dispatch (`asyncio.to_thread` / thread pools) preventing event loop stalls.
+  - Strict admission control (active execution counter and host memory tracking, failing fast with `RESOURCE_EXHAUSTED` when capacity is exceeded).
+  - Default loopback binding (`127.0.0.1` / `[::1]`) enforcing host-local isolation against external network exposure.
+  - Deterministic gRPC cancellation semantics: RPC cancellation propagates `SIGTERM` to the runner supervisor, cleanly terminating sandboxed processes, tearing down cgroups v2 hierarchies, and pruning ephemeral workspaces.
+- Systems runtime adapters:
+  - Bash (`bash`) single-stage isolated runtime adapter with strict process tree containment.
+  - Truthful uninstalled handling for Go (`go`) and Rust (`rustc`) returning actionable error diagnostics when host toolchains are absent.
 
 ### Phase 4: JVM Family & Bytecode Handoff
 - Target runtimes: **Java (`javac`/`java`), Kotlin (`kotlinc`/`java`), Scala (`scalac`/`scala`)**.
-- Dynamic JVM memory baseline admission (accommodating Java VM metaspace and heap overhead).
-- Multi-class JAR bundling (`target.jar`) to support nested classes, lambdas, and companion objects without host recompilation.
-- Restrictive seccomp profile accommodating JVM signal handlers (SIGSEGV/SIGQUIT/SIGUSR2).
+- Java implemented as the first JVM vertical slice; uninstalled runtimes (Kotlin, Scala) truthfully reported as unsupported stubs.
+- Dynamic JVM memory baseline admission:
+  - Accommodates HotSpot VM metaspace, GC overhead, and thread stack baseline (~128 MiB) by lifting cgroup memory ceilings to a minimum of 192 MiB.
+  - Dynamically computes and scales JVM heap limit (`-Xmx`) based on available cgroup memory budget minus metaspace reserves.
+  - Worker daemon memory-aware admission control tracks allocated execution memory against an operator-configured execution budget (`--memory-mb`), defaulting to a safe budget derived from effective host and cgroup memory limits with safe headroom and no overcommit.
+  - Guarantees memory reservations persist throughout cancellation cleanup until runner termination and cgroup teardown conclude, preventing competing requests from breaching memory limits during cleanup.
+- Bytecode handoff architecture (Directory Classpath vs `target.jar`):
+  - Initial planning proposed intermediate `target.jar` archiving; during Phase 4 implementation, direct ephemeral directory classpath handoff (`-cp /workspace Solution`) was selected and validated.
+  - Rationale: Both compilation and execution execute against the identical isolated ephemeral `/workspace` mount in the sandbox. `javac -d /workspace` emits all primary, nested, inner, and lambda classes directly. Direct directory classpath execution eliminates the 500-1500 ms latency of a secondary `jar` packaging process, avoids entropy/device dependencies, and natively loads all nested classes and lambda call sites without recompilation.
+- Restrictive seccomp profile (`SECCOMP_PROFILE_JVM`):
+  - Narrow syscall allowances (`fchdir`, `ftruncate`, `flock`, `sched_getaffinity`, `getrusage`, `restart_syscall`).
+  - Strict `prctl` scoping limited exclusively to `PR_SET_NAME` (preventing `PR_SET_DUMPABLE` overrides).
+  - Strict network denial (`socket` and `setsockopt` return `EPERM` for internal dual-stack probes; active network operations `connect`/`bind`/`listen` killed by `SIGSYS`).
+  - Strict namespace denial (`CLONE_NEW*`, `unshare` killed by `SIGSYS`).
 
 ### Phase 5: Interpreted & Managed Scripting Languages
 - Target runtimes: **JavaScript (`Node.js`), TypeScript (`tsc`), Ruby, PHP, Python 2, Dart, Swift, Racket, Erlang, Elixir, C# (.NET)**.

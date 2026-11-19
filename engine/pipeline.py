@@ -261,15 +261,17 @@ class ExecutionPipeline:
                     compile_output=compile_output,
                 )
 
-            # Stage 2: Execute (C/C++ runtime binary or Python interpreter)
+            # Stage 2: Execute (C/C++ runtime binary, JVM, or Python interpreter)
             # Interpreted languages emit RUNNING directly after ACCEPTED without synthetic COMPILING
             emit(MilestoneEvent(Milestone.RUNNING, current_time_ms(), "Target execution started"))
+
+            exec_args, run_limits = adapter.resolve_execution_limits(request.custom_limits)
 
             exec_res = self.runner.run(
                 workspace=workspace,
                 target_bin=adapter.execution_spec.runner_bin,
-                target_argv=adapter.execution_spec.execution_args,
-                limits=exec_limits,
+                target_argv=exec_args,
+                limits=run_limits,
                 stdin_content=request.stdin,
                 seccomp_profile=adapter.execution_spec.seccomp_profile,
                 cancel_token=cancel_token,
@@ -281,7 +283,7 @@ class ExecutionPipeline:
 
             # Software output bounding if custom limit is smaller than runner's 64 KiB cap
             total_bytes = len(stdout.encode("utf-8")) + len(stderr.encode("utf-8"))
-            if final_status in (Milestone.COMPLETED, Milestone.RUNTIME_ERROR) and total_bytes > exec_limits.max_output_bytes:
+            if final_status in (Milestone.COMPLETED, Milestone.RUNTIME_ERROR) and total_bytes > run_limits.max_output_bytes:
                 final_status = Milestone.OUTPUT_LIMIT
                 raw_stdout = stdout.encode("utf-8")
                 if len(raw_stdout) > exec_limits.max_output_bytes:

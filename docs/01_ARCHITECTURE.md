@@ -74,7 +74,39 @@ Rather than hardcoding language commands into monolithic handlers, each runtime 
 
 ---
 
-## 5. Architectural Non-Goals & Honest Limitations
+## 5. Worker Daemon Architecture & Durable Decisions
+
+The remote execution worker daemon mediates between external orchestration/API clients and local kernel-sandboxed runners.
+
+### Architecture & Design
+- **Asynchronous gRPC Service (`grpc.aio`):** Implemented in Python using `grpc.aio` to seamlessly integrate with the typed `RuntimeRegistry` and `RuntimeAdapter` models without foreign-function interface (FFI) overhead or IPC complexity.
+- **Streaming Telemetry (`ExecuteStream`):** Delivers real-time lifecycle milestone events (`ACCEPTED`, `COMPILING`, `RUNNING`, etc.) as execution progresses; stdout, stderr, and Linux kernel telemetry (`wallMs`, `cpuMs`, `peakMemoryKb`, `exitCode`, `signal`) are delivered in the final completed execution result.
+- **Off-Loop Asynchronous Dispatch:** To prevent long-running compilation or user code execution from blocking the asynchronous event loop, runner subprocesses are dispatched via `asyncio.to_thread` / worker thread pools.
+- **Strict Concurrency & Memory Admission Control:** Managed via an active execution tracking counter (`max_capacity`) and dynamic host memory capacity tracking (`max_memory_kb`).
+  - **Operator-Configured Execution Budget with Host Headroom:** The daemon enforces an operator-configured execution memory budget (via `--memory-mb`). When omitted, it safely derives the budget from effective memory (the minimum of host physical RAM and any active cgroup quota via `memory.max` or `memory.limit_in_bytes`), reserving at least 25% (and a minimum of 1024 MiB on large hosts or 64 MiB for daemon RSS on smaller hosts) headroom. The derived budget strictly respects headroom without artificial floors, and requires an explicit `--memory-mb` budget if effective memory cannot satisfy the headroom requirement.
+  - **Cancellation Cleanup Race Prevention:** When an RPC is cancelled, the handler retains its memory reservation and worker slot until the underlying execution future completes. While the executor terminates `pes2-runner` (`SIGTERM`) and tears down the cgroup hierarchy, the memory remains allocated in daemon accounting. Competing requests arriving during this cleanup window that would exceed the budget are rejected with `grpc.StatusCode.RESOURCE_EXHAUSTED` rather than exceeding physical capacity.
+- **Loopback-Only Interface Security:** The daemon binds exclusively to loopback addresses (`127.0.0.1` / `[::1]`) by default, preventing unauthenticated host exposure or external network penetration.
+- **Deterministic Cancellation & Cleanup:** Client disconnects or gRPC call cancellations signal the execution thread via cancellation tokens, sending `SIGTERM` to the supervisor runner process (`pes2-runner`). The supervisor terminates sandboxed child processes, cleanly tears down cgroups v2 hierarchies, and deletes ephemeral workspace directories.
+
+### JVM Bytecode Handoff & Memory Admission Architecture
+1. **Directory Classpath Handoff:**
+   - Both compilation and execution execute against the identical isolated ephemeral `/workspace` mount in the sandbox.
+   - `javac -d /workspace` emits all primary, nested, inner, and lambda classes directly into `/workspace`.
+   - Direct directory classpath execution (`-cp /workspace Solution`) is zero-copy, eliminates the 500-1500 ms latency of a secondary `jar` packaging process, avoids entropy/device dependencies, and natively loads all nested classes and lambda call sites without recompilation.
+2. **Dynamic JVM Memory Baseline Admission:**
+   - HotSpot JVM requires approximately 128 MiB baseline reserve for native runtime structures (metaspace, thread stacks, JIT compiler threads, GC tables).
+   - Dynamic memory baseline admission ensures cgroup memory limits are accommodated to a minimum of 192 MiB to prevent immediate VM aborts during initialization.
+   - The heap ceiling (`-Xmx`) is dynamically calculated and injected based on the admitted cgroup memory quota (`cgroup_memory_kb - 128 MiB`), ensuring heap allocations never breach kernel cgroup limits.
+
+### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
+During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
+1. **Unified Memory Footprint:** A Kotlin daemon requires a persistent JVM runtime on the host consuming 150-300 MiB baseline RSS solely for RPC dispatch, competing with sandboxed compilations for host RAM.
+2. **Direct Engine Synergy:** The typed adapter layer (`engine/registry.py`) is natively Python. A Python daemon shares typed data structures directly without serialization boundaries or foreign-runtime subprocess handoffs.
+3. **Deterministic Subprocess and Asynchronous Cancellation:** Python's `asyncio` cancellation primitives pair directly with native OS subprocess signal forwarding and cgroup cleanup handlers, ensuring zero orphaned processes or leaked workspaces.
+
+---
+
+## 6. Architectural Non-Goals & Honest Limitations
 - **No Emulation of LeetCode Services:** PES 2 executes code; it does not clone LeetCode's frontend UI, question text, subscription models, or proprietary test cases.
 - **Single-Host vs Multi-Host Clustering:** The initial architecture targets a clean, vertically sliced single-host engine with transparent resource admission before distributed clustering is considered.
 - **Docker Socket Independence:** Core sandbox capabilities rely directly on Linux kernel primitives (cgroups v2, namespaces, seccomp) to avoid requiring privileged Docker-in-Docker daemons.
