@@ -34,6 +34,10 @@ class DaemonMockRunner(MockSandboxRunner):
                 out_path = os.path.join(workspace, "Solution.class")
                 with open(out_path, "wb") as f:
                     f.write(b"\xca\xfe\xba\xbe")
+            elif any("tsc" in str(arg) for arg in target_argv) or target_bin.endswith("tsc"):
+                out_path = os.path.join(workspace, "Solution.js")
+                with open(out_path, "w") as f:
+                    f.write('"use strict";\n')
         return res
 
 
@@ -79,12 +83,15 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertIn("go", runtime_map)
         self.assertIn("rust", runtime_map)
         self.assertIn("php", runtime_map)
+        self.assertIn("typescript", runtime_map)
 
-        # Bash and PHP verified installed
+        # Bash, PHP, and TypeScript verified installed
         self.assertTrue(runtime_map["bash"].is_installed)
         self.assertEqual(runtime_map["bash"].display_name, "Bash")
         self.assertTrue(runtime_map["php"].is_installed)
         self.assertEqual(runtime_map["php"].display_name, "PHP")
+        self.assertTrue(runtime_map["typescript"].is_installed)
+        self.assertEqual(runtime_map["typescript"].display_name, "TypeScript")
 
         # Go and Rust verified uninstalled
         self.assertFalse(runtime_map["go"].is_installed)
@@ -437,6 +444,75 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         assert result_response is not None
         self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
         self.assertEqual(result_response.stdout, "hello from php daemon\n")
+
+    async def test_execute_stream_typescript_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 215000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 30, 20, 25600, "hello from typescript daemon\n", "")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-ts",
+            language_id="typescript",
+            source_code='const msg: string = "hello from typescript daemon"; console.log(msg);\n',
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        # 2-stage TypeScript compilation emits COMPILING
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(result_response.stdout, "hello from typescript daemon\n")
+
+    async def test_execute_stream_compile_error_typescript(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 2, 0, 1500, 1400, 215000, "", "Solution.ts(1,1): error TS1005: ';' expected.\n")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-ts-err",
+            language_id="typescript",
+            source_code="const broken: string = ;\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPILE_ERROR, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPILE_ERROR)
+        self.assertEqual(result_response.exit_code, 2)
+        self.assertIn("error TS1005", result_response.stderr)
 
     async def test_memory_admission_control(self) -> None:
         """Verifies that requests exceeding available daemon memory capacity are rejected with RESOURCE_EXHAUSTED."""
@@ -1164,6 +1240,69 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
             self.assertEqual(final_res.exit_code, 0)
             self.assertEqual(final_res.stdout.strip(), "gRPC live PHP execution OK 42")
+
+            # Verify cgroup cleanup
+            leftovers = [
+                d for d in os.listdir(cgroup_root)
+                if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+            ]
+            self.assertEqual(len(leftovers), 0)
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
+    async def test_grpc_typescript_execution_with_real_native_runner(self) -> None:
+        """Integration test verifying real gRPC TypeScript ExecuteStream through NativeSandboxRunner."""
+        import subprocess
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=2, pipeline=pipeline)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            ts_src = 'const greeting: string = "gRPC live TypeScript execution OK"; console.log(greeting, 21 * 2);\n'
+            req = execution_pb2.ExecuteRequest(
+                request_id="req-live-grpc-ts",
+                language_id="typescript",
+                source_code=ts_src,
+            )
+            call = stub.ExecuteStream(req)
+            milestones = []
+            final_res = None
+            while True:
+                ev = await call.read()
+                if ev is grpc.aio.EOF:
+                    break
+                if ev.HasField("milestone_event"):
+                    milestones.append(ev.milestone_event.milestone)
+                if ev.HasField("result"):
+                    final_res = ev.result
+
+            self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+            self.assertIn(execution_pb2.MILESTONE_COMPILING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+            self.assertIsNotNone(final_res)
+            assert final_res is not None
+            self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
+            self.assertEqual(final_res.exit_code, 0)
+            self.assertEqual(final_res.stdout.strip(), "gRPC live TypeScript execution OK 42")
 
             # Verify cgroup cleanup
             leftovers = [

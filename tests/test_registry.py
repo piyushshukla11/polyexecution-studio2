@@ -233,9 +233,36 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.PHP)
         self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 65536)
 
+    def test_typescript_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.TYPESCRIPT)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.display_name, "TypeScript")
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.NODE)
+        self.assertTrue(adapter.is_installed)
+        self.assertIn("Version 6.0", adapter.installed_version)
+
+        # 2-stage execution: compile_spec MUST be present to emit COMPILING and produce Solution.js
+        self.assertIsNotNone(adapter.compile_spec)
+        assert adapter.compile_spec is not None
+        self.assertTrue(os.path.isabs(adapter.compile_spec.compiler_bin))
+        self.assertEqual(adapter.compile_spec.source_filename, "Solution.ts")
+        self.assertEqual(adapter.compile_spec.artifact_output_name, "Solution.js")
+        self.assertIn("NODE_DISABLE_COMPILE_CACHE=1", adapter.compile_spec.compile_args)
+        self.assertIn("/workspace/Solution.ts", adapter.compile_spec.compile_args)
+        self.assertEqual(adapter.compile_spec.seccomp_profile, SeccompPolicyProfile.NODE)
+        self.assertEqual(adapter.compile_spec.compile_resource_limits.memory_kb, 262144)
+
+        # ExecutionSpec verification
+        self.assertTrue(os.path.isabs(adapter.execution_spec.runner_bin))
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.js")
+        self.assertIn("/workspace/Solution.js", adapter.execution_spec.execution_args)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 131072)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
-            LanguageId.TYPESCRIPT,
             LanguageId.PYTHON2,
             LanguageId.DART,
             LanguageId.SWIFT,
@@ -264,7 +291,6 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertIn("launcher present", csharp_adapter.installed_version)
 
         for lang_id in [
-            LanguageId.TYPESCRIPT,
             LanguageId.PYTHON2,
             LanguageId.DART,
             LanguageId.SWIFT,

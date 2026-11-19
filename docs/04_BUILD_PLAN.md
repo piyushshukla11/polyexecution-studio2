@@ -73,10 +73,16 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
   - Truthful milestone emissions: `ACCEPTED` -> `RUNNING` -> `COMPLETED` / `RUNTIME_ERROR` (never emits `COMPILING`).
   - Measured resource bounds: 2,000 ms CPU timeout, 5,000 ms wall timeout, 64 MiB cgroup memory limit (accommodating ~24.8 MiB baseline resident set size and measured ~32.5 MiB under 500k-element array load), 16 PIDs limit, 64 KiB output cap.
   - Native sandbox profile: dedicated `SECCOMP_PROFILE_PHP` profile permitting narrow initialization syscalls (`sched_getaffinity` for core count detection) and narrowly scoped `prctl` operations (`PR_SET_NAME` for thread naming, `PR_SET_VMA` strictly with `PR_SET_VMA_ANON_NAME` for Zend memory manager anonymous mapping naming), while maintaining default-deny for `capset`, scheduler modifications (`sched_setparam`, `sched_setscheduler`, `setpriority`, `nice`), all network (`socket`, `connect`, etc.), and namespace operations (`clone` namespace flags, `unshare`). Preserves default sandbox `clone` handling (no namespace flags) and `clone3 -> ENOSYS`.
+- Slice 4: **TypeScript (`typescript`) vertical slice**:
+  - Implemented 2-stage transpiled execution: Stage 1 compilation via `/usr/bin/env NODE_DISABLE_COMPILE_CACHE=1 /usr/bin/tsc --target ES2022 --module CommonJS /workspace/Solution.ts` followed by Stage 2 execution via `/usr/bin/node /workspace/Solution.js`.
+  - Truthful milestone emissions: `ACCEPTED` -> `COMPILING` -> `RUNNING` -> `COMPLETED` (syntax/type errors stop at `COMPILING` and produce `COMPILE_ERROR`).
+  - Compile-time avoidance of directory creation: Passing `NODE_DISABLE_COMPILE_CACHE=1` via `/usr/bin/env` disables Node.js module compile cache initialization, completely avoiding `mkdir` syscalls and allowing clean compilation under existing `SECCOMP_PROFILE_NODE` with zero Tier A sandbox changes.
+  - Measured resource bounds: 5,000 ms CPU timeout, 10,000 ms wall timeout, 256 MiB cgroup memory limit (`262144 KiB`) for compilation; 2,000 ms CPU timeout, 5,000 ms wall timeout, 128 MiB cgroup memory limit (`131072 KiB`) for execution.
+  - Native sandbox profile: reuses existing `SECCOMP_PROFILE_NODE` for both compilation and execution stages.
 - Truthful unsupported runtime status:
   - C# (.NET) (`csharp`): launcher present at `/usr/bin/dotnet`, but no .NET SDK is installed on the host (`dotnet --version` fails); truthfully reported as `Incomplete toolchain on host (launcher present, but SDK check failed)` and marked unsupported.
   - Kotlin (`kotlin`): installed in user-space mise path, but excluded from sandbox rootfs; truthfully reported as `Unavailable to sandbox rootfs (installed in user path)` and marked unsupported.
-  - TypeScript (`typescript`), Python 2 (`python2`), Dart (`dart`), Swift (`swift`), Racket (`racket`), Erlang (`erlang`), Elixir (`elixir`), Scala (`scala`), Go (`go`), Rust (`rust`): toolchains completely absent on host; truthfully reported as `Not installed on host`.
+  - Python 2 (`python2`), Dart (`dart`), Swift (`swift`), Racket (`racket`), Erlang (`erlang`), Elixir (`elixir`), Scala (`scala`), Go (`go`), Rust (`rust`): toolchains completely absent on host; truthfully reported as `Not installed on host`.
 - Managed runtime memory notes:
   - V8 virtual address cages: V8 uses pointer compression virtual address reservations; cgroup accounting measures resident anonymous memory and page cache rather than virtual reservations. Physical cgroup limits should not be inflated for virtual address layouts without live resident memory evidence.
 
