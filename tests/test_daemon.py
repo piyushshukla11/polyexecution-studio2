@@ -917,6 +917,69 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             await channel.close()
             await server.stop(grace=0.5)
 
+    async def test_grpc_ruby_execution_with_real_native_runner(self) -> None:
+        """Integration test verifying real gRPC Ruby ExecuteStream through NativeSandboxRunner."""
+        import subprocess
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=2, pipeline=pipeline)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            ruby_src = "puts 'gRPC live Ruby execution OK'\n"
+            req = execution_pb2.ExecuteRequest(
+                request_id="req-live-grpc-ruby",
+                language_id="ruby",
+                source_code=ruby_src,
+            )
+            call = stub.ExecuteStream(req)
+            milestones = []
+            final_res = None
+            while True:
+                ev = await call.read()
+                if ev is grpc.aio.EOF:
+                    break
+                if ev.HasField("milestone_event"):
+                    milestones.append(ev.milestone_event.milestone)
+                if ev.HasField("result"):
+                    final_res = ev.result
+
+            self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+            self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+            self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+            self.assertIsNotNone(final_res)
+            assert final_res is not None
+            self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
+            self.assertEqual(final_res.exit_code, 0)
+            self.assertEqual(final_res.stdout.strip(), "gRPC live Ruby execution OK")
+
+            # Verify cgroup cleanup
+            leftovers = [
+                d for d in os.listdir(cgroup_root)
+                if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+            ]
+            self.assertEqual(len(leftovers), 0)
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

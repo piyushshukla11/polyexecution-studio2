@@ -6,6 +6,16 @@
 #include <seccomp.h>
 #include <sys/prctl.h>
 
+#ifndef PR_SET_VMA
+#define PR_SET_VMA 0x53564d41
+#endif
+#ifndef PR_SET_VMA_ANON_NAME
+#define PR_SET_VMA_ANON_NAME 0
+#endif
+#ifndef PR_SET_THP_DISABLE
+#define PR_SET_THP_DISABLE 41
+#endif
+
 /*
  * Validated, explicit seccomp-bpf syscall filtering profiles.
  * Preserves default-deny architecture, namespace blocking, network isolation,
@@ -16,7 +26,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         profile != SECCOMP_PROFILE_COMPILER &&
         profile != SECCOMP_PROFILE_PYTHON &&
         profile != SECCOMP_PROFILE_BASH &&
-        profile != SECCOMP_PROFILE_JVM) {
+        profile != SECCOMP_PROFILE_JVM &&
+        profile != SECCOMP_PROFILE_RUBY) {
         errno = EINVAL;
         return -1;
     }
@@ -178,6 +189,51 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
          */
         if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 0) < 0 ||
             seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(setsockopt), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (profile == SECCOMP_PROFILE_RUBY) {
+        /*
+         * Ruby 3 interpreted runtime permissions:
+         * - sched_getaffinity: CPU topology awareness for VM GC and worker thread sizing
+         * - eventfd2: internal VM synchronization and timer notifications
+         * - epoll_create1 / epoll_ctl / epoll_pwait / epoll_pwait2 / epoll_wait:
+         *   Ruby Fiber scheduler and I/O event polling loop
+         */
+        const int ruby_allowed[] = {
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(eventfd2),
+            SCMP_SYS(epoll_create1),
+            SCMP_SYS(epoll_ctl),
+            SCMP_SYS(epoll_pwait),
+            SCMP_SYS(epoll_pwait2),
+            SCMP_SYS(epoll_wait)
+        };
+        for (size_t i = 0; i < sizeof(ruby_allowed) / sizeof(ruby_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, ruby_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * Restrict prctl strictly to observed Ruby initialization and thread operations:
+         * 1. PR_SET_NAME: Thread naming invoked by glibc pthread_setname_np
+         * 2. PR_SET_THP_DISABLE: Disables Transparent Huge Pages on heap allocations;
+         *    strictly restricted to arg2 == 1 as observed in runtime traces.
+         * 3. PR_SET_VMA: Labels memory areas in GC; strictly restricted to arg2 == PR_SET_VMA_ANON_NAME (0).
+         * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 2,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_THP_DISABLE),
+                             SCMP_A1(SCMP_CMP_EQ, 1)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 2,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_VMA),
+                             SCMP_A1(SCMP_CMP_EQ, PR_SET_VMA_ANON_NAME)) < 0) {
             seccomp_release(ctx);
             errno = EINVAL;
             return -1;

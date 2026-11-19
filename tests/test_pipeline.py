@@ -752,6 +752,89 @@ class TestExecutionPipeline(unittest.TestCase):
             self.assertIn("is not installed on this host", res.stderr)
             self.assertEqual(len(self.runner.invocations), 0)
 
+    def test_live_ruby_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal Ruby execution
+        ok_req = ExecutionRequest(
+            request_id="req-live-ruby-ok",
+            language_id=LanguageId.RUBY,
+            source_code="puts 'live ruby sandboxed'\n",
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertEqual(ok_res.stdout.strip(), "live ruby sandboxed")
+        milestone_names = [m.milestone for m in ok_res.milestones]
+        self.assertEqual(milestone_names, [Milestone.ACCEPTED, Milestone.RUNNING, Milestone.COMPLETED])
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
+        # 2. Syntax error handling
+        err_req = ExecutionRequest(
+            request_id="req-live-ruby-syntax-err",
+            language_id=LanguageId.RUBY,
+            source_code="def broken(\n",
+        )
+        err_res = pipeline.execute(err_req)
+        self.assertEqual(err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(err_res.exit_code, 1)
+        self.assertIn("syntax error", err_res.stderr)
+
+        # 3. Wall timeout containment
+        timeout_req = ExecutionRequest(
+            request_id="req-live-ruby-timeout",
+            language_id=LanguageId.RUBY,
+            source_code="sleep 10\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=65536, pids=16, max_output_bytes=65536),
+        )
+        timeout_res = pipeline.execute(timeout_req)
+        self.assertEqual(timeout_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement
+        mem_req = ExecutionRequest(
+            request_id="req-live-ruby-oom",
+            language_id=LanguageId.RUBY,
+            source_code="arr = []; loop { arr << ('x' * 1024 * 1024) }\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=2000, memory_kb=32768, pids=16, max_output_bytes=65536),
+        )
+        mem_res = pipeline.execute(mem_req)
+        self.assertEqual(mem_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(mem_res.signal, 9)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-ruby-socket-blocked",
+            language_id=LanguageId.RUBY,
+            source_code="require 'socket'; TCPSocket.new('1.1.1.1', 80)\n",
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
