@@ -66,6 +66,7 @@ class SeccompPolicyProfile(str, Enum):
     JVM = "jvm"
     JVM_PERMISSIVE = "jvm_permissive"
     V8_NODE = "v8_node"
+    RUBY = "ruby"
 
 
 MAX_SOURCE_BYTES: int = 65536

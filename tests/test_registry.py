@@ -170,6 +170,50 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertFalse(scala_adapter.is_installed)
         self.assertEqual(scala_adapter.installed_version, "Not installed on host")
 
+    def test_ruby_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.RUBY)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.display_name, "Ruby")
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.RUBY)
+        self.assertTrue(adapter.is_installed)
+
+        # Single-stage execution: compile_spec MUST be None to never emit COMPILING
+        self.assertIsNone(adapter.compile_spec)
+
+        # ExecutionSpec verification
+        self.assertTrue(os.path.isabs(adapter.execution_spec.runner_bin))
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.rb")
+        self.assertIn("/workspace/Solution.rb", adapter.execution_spec.execution_args)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.RUBY)
+        self.assertGreaterEqual(adapter.execution_spec.default_resource_limits.memory_kb, 65536)
+
+    def test_phase5_unsupported_runtimes_truthful(self) -> None:
+        unsupported = [
+            (LanguageId.JAVASCRIPT, "JavaScript (Node.js)"),
+            (LanguageId.TYPESCRIPT, "TypeScript"),
+            (LanguageId.PHP, "PHP"),
+            (LanguageId.PYTHON2, "Python 2"),
+            (LanguageId.DART, "Dart"),
+            (LanguageId.SWIFT, "Swift"),
+            (LanguageId.RACKET, "Racket"),
+            (LanguageId.ERLANG, "Erlang"),
+            (LanguageId.ELIXIR, "Elixir"),
+            (LanguageId.CSHARP, "C# (.NET)"),
+        ]
+        for lang_id, name in unsupported:
+            adapter = self.registry.get(lang_id)
+            self.assertIsNotNone(adapter, f"{lang_id} should be registered in registry")
+            assert adapter is not None
+            self.assertEqual(adapter.display_name, name)
+            self.assertFalse(
+                adapter.is_installed,
+                f"{lang_id} is unavailable or unreachable in sandbox rootfs and must be reported uninstalled",
+            )
+            self.assertEqual(adapter.installed_version, "Not installed on host")
+            self.assertIsNone(adapter.compile_spec)
+
 
 if __name__ == "__main__":
     unittest.main()

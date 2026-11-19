@@ -677,6 +677,81 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertIn("inner", nested_res.stdout)
         self.assertIn("lambda-executed", nested_res.stdout)
 
+    def test_ruby_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 35, 20, 16384, "hello ruby\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-rb-1",
+            language_id=LanguageId.RUBY,
+            source_code="puts 'hello ruby'\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.stdout, "hello ruby\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        # Truthful emission: Direct interpreted Ruby must NEVER emit COMPILING
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        self.assertTrue(self.runner.invocations[0]["target_bin"].endswith("ruby"))
+        self.assertEqual(self.runner.invocations[0]["seccomp_profile"], SeccompPolicyProfile.RUBY)
+        self.assertEqual(self.runner.invocations[0]["target_argv"], ["/workspace/Solution.rb"])
+
+    def test_ruby_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 25, 15, 12288, "", "Solution.rb:1: syntax error\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-rb-err",
+            language_id=LanguageId.RUBY,
+            source_code="def broken(\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("syntax error", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
+    def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
+        unsupported = [
+            LanguageId.JAVASCRIPT,
+            LanguageId.TYPESCRIPT,
+            LanguageId.PHP,
+            LanguageId.PYTHON2,
+            LanguageId.DART,
+            LanguageId.SWIFT,
+            LanguageId.RACKET,
+            LanguageId.ERLANG,
+            LanguageId.ELIXIR,
+            LanguageId.CSHARP,
+        ]
+        for lang_id in unsupported:
+            req = ExecutionRequest(
+                request_id=f"req-unsupported-{lang_id.value}",
+                language_id=lang_id,
+                source_code="print('hello')\n",
+            )
+            res = self.pipeline.execute(req)
+            self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+            self.assertIn("is not installed on this host", res.stderr)
+            self.assertEqual(len(self.runner.invocations), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -336,6 +336,39 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
         self.assertEqual(result_response.stdout, "hello from java daemon\n")
 
+    async def test_execute_stream_ruby_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 30, 20, 16384, "hello from ruby daemon\n", "")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-ruby",
+            language_id="ruby",
+            source_code="puts 'hello from ruby daemon'\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        # Direct interpreted Ruby must NEVER emit COMPILING
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(result_response.stdout, "hello from ruby daemon\n")
+
     async def test_memory_admission_control(self) -> None:
         """Verifies that requests exceeding available daemon memory capacity are rejected with RESOURCE_EXHAUSTED."""
         server, port = create_server(
