@@ -885,6 +885,57 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_racket_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 500, 480, 140000, "hello racket\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-racket-ok",
+            language_id=LanguageId.RACKET,
+            source_code="#lang racket\n(displayln \"hello racket\")\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello racket\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/racket")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.RACKET)
+
+    def test_racket_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 400, 390, 138000, "", "racket: error: test error\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-racket-err",
+            language_id=LanguageId.RACKET,
+            source_code="#lang racket\n(error 'test \"test error\")\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("error:", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
     def test_typescript_success_milestones(self) -> None:
         # Mock compilation and execution success
         self.runner.queue_result(
@@ -983,7 +1034,6 @@ class TestExecutionPipeline(unittest.TestCase):
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.RACKET,
             LanguageId.ERLANG,
             LanguageId.ELIXIR,
             LanguageId.CSHARP,
@@ -1561,6 +1611,116 @@ class TestExecutionPipeline(unittest.TestCase):
             request_id="req-live-dart-socket-blocked",
             language_id=LanguageId.DART,
             source_code="import 'dart:io'; void main() async { await Socket.connect('127.0.0.1', 80); }\n",
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_racket_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        racket_adapter = self.registry.get(LanguageId.RACKET)
+        if not racket_adapter or not racket_adapter.is_installed:
+            self.skipTest("Racket toolchain not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+
+        # 1. Normal execution with read-only /etc/racket verification
+        rkt_src = (
+            "#lang racket\n"
+            "(displayln \"RACKET_EXEC_SUCCESS\")\n"
+            "(define etc-ro\n"
+            "  (with-handlers ([exn:fail? (lambda (e) \"true\")])\n"
+            "    (with-output-to-file \"/etc/racket/leak.txt\" (lambda () (displayln \"bad\")))\n"
+            "    \"false\"))\n"
+            "(displayln (string-append \"ETC_RO:\" etc-ro))\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-racket-ok",
+            language_id=LanguageId.RACKET,
+            source_code=rkt_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("RACKET_EXEC_SUCCESS", ok_res.stdout)
+        self.assertIn("ETC_RO:true", ok_res.stdout)
+
+        # 2. Syntax / runtime error
+        err_req = ExecutionRequest(
+            request_id="req-live-racket-err",
+            language_id=LanguageId.RACKET,
+            source_code="#lang racket\n(error 'test \"racket test error\")\n",
+        )
+        err_res = pipeline.execute(err_req)
+        self.assertEqual(err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(err_res.exit_code, 1)
+        self.assertIn("racket test error", err_res.stderr)
+
+        # 3a. Wall timeout
+        wall_to_req = ExecutionRequest(
+            request_id="req-live-racket-wall-timeout",
+            language_id=LanguageId.RACKET,
+            source_code="#lang racket\n(sleep 10)\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=196608, pids=32, max_output_bytes=65536),
+        )
+        wall_to_res = pipeline.execute(wall_to_req)
+        self.assertEqual(wall_to_res.final_status, Milestone.TIMEOUT)
+
+        # 3b. CPU timeout
+        cpu_to_req = ExecutionRequest(
+            request_id="req-live-racket-cpu-timeout",
+            language_id=LanguageId.RACKET,
+            source_code="#lang racket\n(let loop () (loop))\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=196608, pids=32, max_output_bytes=65536),
+        )
+        cpu_to_res = pipeline.execute(cpu_to_req)
+        self.assertEqual(cpu_to_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement at adapter default (192 MiB)
+        oom_src = (
+            "#lang racket\n"
+            "(define (bomb acc)\n"
+            "  (bomb (cons (make-bytes 10000000 42) acc)))\n"
+            "(bomb null)\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-racket-oom-default-192mb",
+            language_id=LanguageId.RACKET,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-racket-socket-blocked",
+            language_id=LanguageId.RACKET,
+            source_code="#lang racket\n(require racket/tcp)\n(tcp-connect \"127.0.0.1\" 80)\n",
         )
         evil_res = pipeline.execute(evil_req)
         self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)

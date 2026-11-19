@@ -30,7 +30,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         profile != SECCOMP_PROFILE_RUBY &&
         profile != SECCOMP_PROFILE_NODE &&
         profile != SECCOMP_PROFILE_PHP &&
-        profile != SECCOMP_PROFILE_DART) {
+        profile != SECCOMP_PROFILE_DART &&
+        profile != SECCOMP_PROFILE_RACKET) {
         errno = EINVAL;
         return -1;
     }
@@ -369,6 +370,44 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
             seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 2,
                              SCMP_A0(SCMP_CMP_EQ, PR_SET_VMA),
                              SCMP_A1(SCMP_CMP_EQ, PR_SET_VMA_ANON_NAME)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (profile == SECCOMP_PROFILE_RACKET) {
+        /*
+         * Racket CS runtime permissions:
+         * - sched_getaffinity: CPU topology awareness for Chez Scheme
+         * - epoll_create / epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
+         *   Racket asynchronous event and I/O polling loop
+         * - poll: descriptor and timeout polling
+         */
+        const int racket_allowed[] = {
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(epoll_create),
+            SCMP_SYS(epoll_create1),
+            SCMP_SYS(epoll_ctl),
+            SCMP_SYS(epoll_wait),
+            SCMP_SYS(epoll_pwait),
+            SCMP_SYS(epoll_pwait2),
+            SCMP_SYS(poll)
+        };
+        for (size_t i = 0; i < sizeof(racket_allowed) / sizeof(racket_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, racket_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * Restrict prctl strictly to PR_SET_NAME and PR_GET_NAME:
+         * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_GET_NAME)) < 0) {
             seccomp_release(ctx);
             errno = EINVAL;
             return -1;

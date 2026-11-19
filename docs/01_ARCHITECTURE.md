@@ -136,6 +136,13 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Narrowed SDK mount: bind-mounts host `/opt/dart-sdk` into `/opt/dart-sdk` read-only (`MS_RDONLY | MS_NOSUID | MS_NODEV`), with targets restricted under `/opt/dart-sdk/`.
    - Namespace-isolated procfs mount: glibc `pthread_getattr_np(pthread_self(), &attr)` in `os_thread.cc` reads `/proc/self/maps` to discover stack bounds, and canonicalizes `/proc/self/exe`. To support this without compromising host isolation, procfs is mounted at `<rootfs>/proc` strictly inside the child's `CLONE_NEWPID` namespace with `MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC` and `hidepid=2,subset=pid`. This exposes only the child's PID 1 entry, completely hides host and external task entries, prevents write operations (`EROFS`), and leaves no residual mounts or processes.
    - Bounded under an empirically measured 192 MiB cgroup limit (`196608 KiB`), accommodating the Dart VM baseline RSS of ~118–120 MiB while leaving ~73 MiB headroom for user code execution.
+8. **Racket Runtime Seccomp Profile (`SECCOMP_PROFILE_RACKET`) & Read-Only /etc/racket Mount:**
+   - Single-stage direct execution via `/usr/bin/racket /workspace/Solution.rkt`.
+   - Dedicated `SECCOMP_PROFILE_RACKET` (profile 9) permitting narrow initialization syscalls: `sched_getaffinity` (core awareness for Chez Scheme runtime), `epoll_create`/`epoll_create1`/`epoll_ctl`/`epoll_wait`/`epoll_pwait`/`epoll_pwait2` (event loop coordination), and `poll` (descriptor and timer multiplexing).
+   - Restricts `prctl` strictly to `PR_SET_NAME` (thread naming) and `PR_GET_NAME` (thread name inspection). Any other `prctl` options (such as `PR_SET_DUMPABLE`) are denied and terminate the process with `SIGSYS`.
+   - Preserves default sandbox `clone` handling (no namespace flags) and returns `ENOSYS` on `clone3`. Strict default-deny remains enforced for all network calls (`socket`, `connect`, etc.), capabilities (`capset`), and scheduler modifications (`sched_setparam`, `sched_setscheduler`, `setpriority`, `nice`).
+   - Narrowed configuration mount: host `/etc/racket` bind-mounted read-only (`MS_RDONLY | MS_NOSUID | MS_NODEV`), exposing `config.rktd` while keeping the sandbox isolated from the rest of `/etc`.
+   - Bounded under an empirically measured 192 MiB cgroup limit (`196608 KiB`), accommodating Chez Scheme's ~135–140 MiB baseline heap while leaving ~55 MiB headroom for user code execution.
 
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
