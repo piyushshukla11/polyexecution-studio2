@@ -834,6 +834,57 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_dart_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 500, 480, 122880, "hello dart\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-dart-ok",
+            language_id=LanguageId.DART,
+            source_code="void main() { print('hello dart'); }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello dart\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/dart")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.DART)
+
+    def test_dart_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 254, 0, 400, 390, 118784, "", "Error: Can't find ')' to match '('\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-dart-err",
+            language_id=LanguageId.DART,
+            source_code="void main( {\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 254)
+        self.assertIn("Error:", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
     def test_typescript_success_milestones(self) -> None:
         # Mock compilation and execution success
         self.runner.queue_result(
@@ -931,7 +982,6 @@ class TestExecutionPipeline(unittest.TestCase):
     def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
         unsupported = [
             LanguageId.PYTHON2,
-            LanguageId.DART,
             LanguageId.SWIFT,
             LanguageId.RACKET,
             LanguageId.ERLANG,
@@ -1379,6 +1429,138 @@ class TestExecutionPipeline(unittest.TestCase):
             request_id="req-live-ts-socket-blocked",
             language_id=LanguageId.TYPESCRIPT,
             source_code='declare function require(name: string): any;\nconst http = require("http"); http.get("http://1.1.1.1");\n',
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
+        self.assertEqual(evil_res.signal, 31)
+
+        # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_dart_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        dart_adapter = self.registry.get(LanguageId.DART)
+        if not dart_adapter or not dart_adapter.is_installed:
+            self.skipTest("Dart toolchain not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+
+        # 1. Normal execution with procfs and read-only verification
+        dart_src = (
+            "import 'dart:io';\n"
+            "void main() {\n"
+            "  final maps = File('/proc/self/maps').readAsStringSync();\n"
+            "  final exe = Link('/proc/self/exe').targetSync();\n"
+            "  final pids = Directory('/proc').listSync()\n"
+            "      .map((e) => e.path.split('/').last)\n"
+            "      .where((n) => RegExp(r'^\\d+$').hasMatch(n)).toList();\n"
+            "  bool procWriteBlocked = false;\n"
+            "  try {\n"
+            "    File('/proc/1/comm').writeAsStringSync('bad');\n"
+            "  } catch (e) {\n"
+            "    procWriteBlocked = true;\n"
+            "  }\n"
+            "  bool sdkWriteBlocked = false;\n"
+            "  try {\n"
+            "    File('/opt/dart-sdk/leak.txt').writeAsStringSync('bad');\n"
+            "  } catch (e) {\n"
+            "    sdkWriteBlocked = true;\n"
+            "  }\n"
+            "  print('MAPS_LEN:' + maps.length.toString());\n"
+            "  print('EXE_TARGET:' + exe);\n"
+            "  print('PIDS_LEN:' + pids.length.toString());\n"
+            "  print('PROC_RO:' + procWriteBlocked.toString());\n"
+            "  print('SDK_RO:' + sdkWriteBlocked.toString());\n"
+            "  print('DART_EXEC_SUCCESS');\n"
+            "}\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-dart-ok",
+            language_id=LanguageId.DART,
+            source_code=dart_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("DART_EXEC_SUCCESS", ok_res.stdout)
+        self.assertIn("PROC_RO:true", ok_res.stdout)
+        self.assertIn("SDK_RO:true", ok_res.stdout)
+        self.assertIn("PIDS_LEN:1", ok_res.stdout)
+
+        # 2. Syntax / runtime error
+        err_req = ExecutionRequest(
+            request_id="req-live-dart-err",
+            language_id=LanguageId.DART,
+            source_code="void main() { throw Exception('dart test error'); }\n",
+        )
+        err_res = pipeline.execute(err_req)
+        self.assertEqual(err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertIn("dart test error", err_res.stderr)
+
+        # 3a. Wall timeout
+        wall_to_req = ExecutionRequest(
+            request_id="req-live-dart-wall-timeout",
+            language_id=LanguageId.DART,
+            source_code="import 'dart:io'; void main() { sleep(Duration(seconds: 10)); }\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=196608, pids=32, max_output_bytes=65536),
+        )
+        wall_to_res = pipeline.execute(wall_to_req)
+        self.assertEqual(wall_to_res.final_status, Milestone.TIMEOUT)
+
+        # 3b. CPU timeout
+        cpu_to_req = ExecutionRequest(
+            request_id="req-live-dart-cpu-timeout",
+            language_id=LanguageId.DART,
+            source_code="void main() { while(true) {} }\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=196608, pids=32, max_output_bytes=65536),
+        )
+        cpu_to_res = pipeline.execute(cpu_to_req)
+        self.assertEqual(cpu_to_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement at adapter default (192 MiB)
+        oom_src = (
+            "void main() {\n"
+            "  final list = <List<int>>[];\n"
+            "  while (true) {\n"
+            "    list.add(List<int>.filled(10000000, 42));\n"
+            "  }\n"
+            "}\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-dart-oom-default-192mb",
+            language_id=LanguageId.DART,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
+
+        # 5. Network denial (socket blocked by policy)
+        evil_req = ExecutionRequest(
+            request_id="req-live-dart-socket-blocked",
+            language_id=LanguageId.DART,
+            source_code="import 'dart:io'; void main() async { await Socket.connect('127.0.0.1', 80); }\n",
         )
         evil_res = pipeline.execute(evil_req)
         self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)

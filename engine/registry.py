@@ -476,6 +476,33 @@ class RuntimeRegistry:
         )
         self.register(ts_adapter)
 
+        # Dart runtime (Phase 5 Slice 5)
+        dart_bin = "/usr/bin/dart" if os.path.exists("/usr/bin/dart") else shutil.which("dart") or "/usr/bin/dart"
+        dart_adapter = RuntimeAdapter(
+            id=LanguageId.DART,
+            display_name="Dart",
+            official_version="Dart 3.x",
+            installed_version=detect_tool_version(dart_bin),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=dart_bin,
+                execution_args=["--suppress-analytics", "run", "/workspace/Solution.dart"],
+                source_filename="Solution.dart",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=10000,
+                    cpu_ms=5000,
+                    memory_kb=196608,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.DART,
+            ),
+            seccomp_policy=SeccompPolicyProfile.DART,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(dart_adapter)
+
         # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         py2_adapter = RuntimeAdapter(
@@ -495,24 +522,6 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(py2_adapter)
-
-        dart_adapter = RuntimeAdapter(
-            id=LanguageId.DART,
-            display_name="Dart",
-            official_version="Dart 3.x",
-            installed_version=detect_tool_version("/usr/bin/dart"),
-            family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/dart",
-                execution_args=[],
-                source_filename="solution.dart",
-                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
-            ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
-            cleanup_spec=CleanupSpec(),
-        )
-        self.register(dart_adapter)
 
         swift_adapter = RuntimeAdapter(
             id=LanguageId.SWIFT,
