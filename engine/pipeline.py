@@ -112,7 +112,7 @@ class ExecutionPipeline:
             ev = MilestoneEvent(
                 Milestone.SANDBOX_ERROR,
                 now,
-                f"Language '{request.language_id.value}' not installed on host: {adapter.installed_version}",
+                f"Language '{request.language_id.value}' not installed on host or unavailable: {adapter.installed_version}",
             )
             emit(ev)
             return ExecutionResult(

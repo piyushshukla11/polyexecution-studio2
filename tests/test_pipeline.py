@@ -828,7 +828,27 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
         self.assertEqual(evil_res.signal, 31)
 
-        # 6. Verify zero cgroup leftovers
+        # 6. Fiber scheduler execution inside sandbox
+        fiber_src = (
+            "f = Fiber.new do |val|\n"
+            "  Fiber.yield val * 2\n"
+            "  'done'\n"
+            "end\n"
+            "res1 = f.resume(21)\n"
+            "res2 = f.resume\n"
+            "puts \"Fiber-Result: #{res1}, #{res2}\"\n"
+        )
+        fiber_req = ExecutionRequest(
+            request_id="req-live-ruby-fiber",
+            language_id=LanguageId.RUBY,
+            source_code=fiber_src,
+        )
+        fiber_res = pipeline.execute(fiber_req)
+        self.assertEqual(fiber_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(fiber_res.exit_code, 0)
+        self.assertIn("Fiber-Result: 42, done", fiber_res.stdout)
+
+        # 7. Verify zero cgroup leftovers
         leftovers = [
             d for d in os.listdir(cgroup_root)
             if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))

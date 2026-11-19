@@ -104,8 +104,9 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Milestones emitted reflect actual execution phases truthfully: `ACCEPTED` -> `RUNNING` -> `COMPLETED` / `RUNTIME_ERROR` without synthetic `COMPILING` milestones.
 2. **Sandbox Rootfs Reachability & Honest Support Status:**
    - The native sandbox rootfs constructs an unprivileged user namespace bind-mounting `/usr`, `/bin`, `/lib`, and `/lib64`, completely excluding user home paths.
-   - Runtimes installed solely via user-space managers (e.g. mise shims in `~/.local/share/mise`) or lacking essential runtime packages (e.g. `dotnet` missing SDKs) are unreachable inside the sandbox rootfs.
-   - The registry detects and reports these runtimes as uninstalled, failing closed (`SANDBOX_ERROR`) rather than attempting execution.
+   - Runtimes installed solely via user-space managers (e.g. mise shims in `~/.local/share/mise` for Node.js and Kotlin) are unavailable inside the sandbox rootfs.
+   - Toolchains present on the host without required runtimes or SDKs (such as `/usr/bin/dotnet` without an installed .NET SDK) are classified as incomplete toolchains.
+   - The registry detects and reports these runtimes truthfully as unavailable to sandbox or incomplete, ensuring they remain unsupported and fail closed (`SANDBOX_ERROR`) rather than attempting execution.
 3. **Ruby Runtime Seccomp Profile (`SECCOMP_PROFILE_RUBY`):**
    - Ruby 3 requires narrow startup syscalls: `sched_getaffinity` for core count detection, `eventfd2` and `epoll_create1`/polling for Fiber scheduling and I/O coordination.
    - Restricts `prctl` operations strictly to `PR_SET_NAME` (thread naming), `PR_SET_THP_DISABLE` (transparent huge page optimization), and `PR_SET_VMA` with `PR_SET_VMA_ANON_NAME` (GC page naming). Any attempt to invoke other `prctl` options (such as `PR_SET_DUMPABLE`) is default-denied and terminates the process with `SIGSYS`.

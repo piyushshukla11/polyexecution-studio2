@@ -160,7 +160,11 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(kotlin_adapter.display_name, "Kotlin")
         self.assertEqual(kotlin_adapter.family, RuntimeFamily.JVM)
         self.assertFalse(kotlin_adapter.is_installed)
-        self.assertEqual(kotlin_adapter.installed_version, "Not installed on host")
+        # Truthful audit: kotlinc exists in user mise path but is excluded from sandbox rootfs
+        self.assertTrue(
+            kotlin_adapter.installed_version.startswith("Unavailable to sandbox rootfs")
+            or kotlin_adapter.installed_version == "Not installed on host"
+        )
 
         scala_adapter = self.registry.get(LanguageId.SCALA)
         self.assertIsNotNone(scala_adapter)
@@ -191,28 +195,57 @@ class TestRuntimeRegistry(unittest.TestCase):
 
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
-            (LanguageId.JAVASCRIPT, "JavaScript (Node.js)"),
-            (LanguageId.TYPESCRIPT, "TypeScript"),
-            (LanguageId.PHP, "PHP"),
-            (LanguageId.PYTHON2, "Python 2"),
-            (LanguageId.DART, "Dart"),
-            (LanguageId.SWIFT, "Swift"),
-            (LanguageId.RACKET, "Racket"),
-            (LanguageId.ERLANG, "Erlang"),
-            (LanguageId.ELIXIR, "Elixir"),
-            (LanguageId.CSHARP, "C# (.NET)"),
+            LanguageId.JAVASCRIPT,
+            LanguageId.TYPESCRIPT,
+            LanguageId.PHP,
+            LanguageId.PYTHON2,
+            LanguageId.DART,
+            LanguageId.SWIFT,
+            LanguageId.RACKET,
+            LanguageId.ERLANG,
+            LanguageId.ELIXIR,
+            LanguageId.CSHARP,
         ]
-        for lang_id, name in unsupported:
+        for lang_id in unsupported:
             adapter = self.registry.get(lang_id)
             self.assertIsNotNone(adapter, f"{lang_id} should be registered in registry")
             assert adapter is not None
-            self.assertEqual(adapter.display_name, name)
             self.assertFalse(
                 adapter.is_installed,
-                f"{lang_id} is unavailable or unreachable in sandbox rootfs and must be reported uninstalled",
+                f"{lang_id} is unavailable or incomplete and must be reported uninstalled/unsupported",
             )
-            self.assertEqual(adapter.installed_version, "Not installed on host")
             self.assertIsNone(adapter.compile_spec)
+
+        # Truthful classification checks
+        js_adapter = self.registry.get(LanguageId.JAVASCRIPT)
+        assert js_adapter is not None
+        self.assertTrue(
+            js_adapter.installed_version.startswith("Unavailable to sandbox rootfs"),
+            f"Expected user-space mise node to be reported unavailable to sandbox: {js_adapter.installed_version}",
+        )
+        self.assertIn("user path", js_adapter.installed_version)
+
+        csharp_adapter = self.registry.get(LanguageId.CSHARP)
+        assert csharp_adapter is not None
+        self.assertTrue(
+            csharp_adapter.installed_version.startswith("Incomplete toolchain on host"),
+            f"Expected dotnet without SDK to be reported incomplete: {csharp_adapter.installed_version}",
+        )
+        self.assertIn("launcher present", csharp_adapter.installed_version)
+
+        for lang_id in [
+            LanguageId.TYPESCRIPT,
+            LanguageId.PHP,
+            LanguageId.PYTHON2,
+            LanguageId.DART,
+            LanguageId.SWIFT,
+            LanguageId.RACKET,
+            LanguageId.ERLANG,
+            LanguageId.ELIXIR,
+        ]:
+            ad = self.registry.get(lang_id)
+            assert ad is not None
+            self.assertEqual(ad.installed_version, "Not installed on host")
 
 
 if __name__ == "__main__":

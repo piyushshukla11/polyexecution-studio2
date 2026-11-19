@@ -18,8 +18,18 @@ from engine.models import (
 
 
 def detect_tool_version(binary_path: str, version_arg: str = "--version") -> str:
-    """Safely inspect host installed version for honest reporting."""
-    if not os.path.exists(binary_path) and not shutil.which(binary_path):
+    """Safely inspect host installed version for honest reporting.
+    Truthfully reports:
+    - Toolchains installed in user-space paths (e.g. mise) that are unavailable to the sandbox rootfs.
+    - Host launchers present without a functional runtime/SDK (incomplete toolchains).
+    - Toolchains completely absent on the host.
+    - Verified installed toolchains accessible inside the sandbox.
+    """
+    if not os.path.exists(binary_path):
+        basename = os.path.basename(binary_path)
+        user_path = shutil.which(basename)
+        if user_path:
+            return f"Unavailable to sandbox rootfs (installed in user path: {user_path})"
         return "Not installed on host"
     try:
         proc = subprocess.run(
@@ -30,11 +40,13 @@ def detect_tool_version(binary_path: str, version_arg: str = "--version") -> str
             check=False,
         )
         if proc.returncode != 0:
-            return "Not installed on host"
+            first_err = (proc.stderr.splitlines()[0] if proc.stderr else proc.stdout.splitlines()[0] if proc.stdout else "").strip()
+            err_msg = f": {first_err}" if first_err else ""
+            return f"Incomplete toolchain on host (launcher present at {binary_path}, but SDK check failed{err_msg})"
         first_line = proc.stdout.splitlines()[0] if proc.stdout else proc.stderr.splitlines()[0] if proc.stderr else ""
         return first_line.strip() if first_line else "Installed (version unknown)"
-    except Exception:
-        return "Not installed on host"
+    except Exception as exc:
+        return f"Incomplete toolchain on host (inspection error: {exc})"
 
 
 class RuntimeRegistry:
