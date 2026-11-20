@@ -418,12 +418,17 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
     } else if (profile == SECCOMP_PROFILE_ERLANG) {
         /*
          * Erlang / OTP BEAM emulator execution & launcher script permissions:
-         * - getpgrp / getresuid / getresgid / wait4: shell launcher script (/usr/bin/erl) initialization & exec
+         * - getpgrp / getresuid / getresgid: credential and process group inspection during BEAM and launcher init
+         * - wait4: reaping child launcher / helper processes
          * - sched_getaffinity: CPU scheduler topology detection for BEAM SMP
          * - epoll_create / epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
          *   BEAM asynchronous I/O driver event polling loop
          * - poll / ppoll: file descriptor polling
          * - timerfd_create / timerfd_settime / timerfd_gettime: kernel timerfd integration for BEAM timer driver
+         * - chdir: invoked by /usr/bin/erl launcher script during directory path resolution (dirname/pwd)
+         * - memfd_create / ftruncate: JIT compilation buffer management in BEAM emulator
+         * - setsid / pselect6 / close_range: process group separation and FD hygiene in erl_child_setup
+         * - sendmsg / recvmsg / getsockopt / setsockopt: stream communication across internal AF_UNIX domain socketpair
          */
         const int erlang_allowed[] = {
             SCMP_SYS(getpgrp),
@@ -441,7 +446,17 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
             SCMP_SYS(ppoll),
             SCMP_SYS(timerfd_create),
             SCMP_SYS(timerfd_settime),
-            SCMP_SYS(timerfd_gettime)
+            SCMP_SYS(timerfd_gettime),
+            SCMP_SYS(chdir),
+            SCMP_SYS(memfd_create),
+            SCMP_SYS(ftruncate),
+            SCMP_SYS(setsid),
+            SCMP_SYS(pselect6),
+            SCMP_SYS(close_range),
+            SCMP_SYS(sendmsg),
+            SCMP_SYS(recvmsg),
+            SCMP_SYS(getsockopt),
+            SCMP_SYS(setsockopt)
         };
         for (size_t i = 0; i < sizeof(erlang_allowed) / sizeof(erlang_allowed[0]); ++i) {
             if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, erlang_allowed[i], 0) < 0) {
@@ -449,6 +464,41 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
                 errno = EINVAL;
                 return -1;
             }
+        }
+
+        /*
+         * Permit socketpair strictly for AF_UNIX internal communication (erl_child_setup).
+         * Other domains (AF_INET, etc.) are default-denied and terminate with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socketpair), 1,
+                             SCMP_A0(SCMP_CMP_EQ, AF_UNIX)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Return EPERM for socket() so internal resolver initialization falls back
+         * cleanly to offline mode without creating descriptors or crashing the process.
+         * Connection and other network operations (connect, bind, listen, accept) remain default-denied (SIGSYS).
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Restrict setfsuid and setfsgid strictly to ID 0 (the sandbox's sole mapped UID/GID).
+         * Any attempt to alter filesystem identity to non-zero IDs is denied with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(setfsuid), 1,
+                             SCMP_A0(SCMP_CMP_EQ, 0)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(setfsgid), 1,
+                             SCMP_A0(SCMP_CMP_EQ, 0)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
         }
 
         /*

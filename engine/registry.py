@@ -534,10 +534,9 @@ class RuntimeRegistry:
         erl_bin = "/usr/bin/erl" if os.path.exists("/usr/bin/erl") else shutil.which("erl") or "/usr/bin/erl"
         erl_eval_harness = (
             "try "
-            "case compile:file(\"/workspace/solution.erl\", [return_errors, {outdir, \"/workspace\"}]) of "
-            "{ok, Mod} -> "
-            "code:add_patha(\"/workspace\"), "
-            "{module, Mod} = code:ensure_loaded(Mod), "
+            "case compile:file(\"/workspace/solution.erl\", [binary, return_errors]) of "
+            "{ok, Mod, Bin} -> "
+            "{module, Mod} = code:load_binary(Mod, \"/workspace/solution.erl\", Bin), "
             "case erlang:function_exported(Mod, start, 0) of "
             "true -> Mod:start(); "
             "false -> case erlang:function_exported(Mod, main, 1) of "

@@ -1048,9 +1048,127 @@ static void action_erlang_prctl_dumpable_blocked(void) {
     prctl(PR_SET_DUMPABLE, 1);
 }
 
-static void action_erlang_socket_blocked(void) {
+static void action_erlang_chdir(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
-    socket(AF_INET, SOCK_STREAM, 0);
+    if (chdir("/tmp") != 0) _exit(3);
+}
+
+static void action_erlang_memfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "beam_jit", 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_erlang_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "beam_jit_trunc", 0);
+    if (fd < 0) _exit(3);
+    int rc = ftruncate(fd, 4096);
+    close(fd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_erlang_setsid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    (void)setsid();
+}
+
+static void action_erlang_pselect6(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    struct timespec ts = {0, 0};
+    (void)pselect(0, NULL, NULL, NULL, &ts, NULL);
+}
+
+static void action_erlang_close_range(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    (void)syscall(436, 100, 105, 0);
+}
+
+static void action_erlang_socketpair_unix(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(3);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_erlang_socketpair_inet_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    socketpair(AF_INET, SOCK_STREAM, 0, sv);
+}
+
+static void action_erlang_socket_returns_eperm(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_erlang_connect_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    connect(-1, NULL, 0);
+}
+
+static void action_erlang_bind_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    bind(-1, NULL, 0);
+}
+
+static void action_erlang_setfsuid_zero(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsuid(0);
+}
+
+static void action_erlang_setfsuid_nonzero_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsuid(1000);
+}
+
+static void action_erlang_setfsgid_zero(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsgid(0);
+}
+
+static void action_erlang_setfsgid_nonzero_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsgid(1000);
+}
+
+static void action_erlang_sendmsg_recvmsg(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(2);
+    char buf = 'E';
+    struct iovec iov = { .iov_base = &buf, .iov_len = 1 };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    if (sendmsg(sv[0], &msg, 0) != 1) _exit(3);
+    char in_buf;
+    struct iovec in_iov = { .iov_base = &in_buf, .iov_len = 1 };
+    struct msghdr in_msg;
+    memset(&in_msg, 0, sizeof(in_msg));
+    in_msg.msg_iov = &in_iov;
+    in_msg.msg_iovlen = 1;
+    if (recvmsg(sv[1], &in_msg, 0) != 1 || in_buf != 'E') _exit(4);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_erlang_getsockopt_setsockopt(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(2);
+    int val = 1;
+    if (setsockopt(sv[0], SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) != 0) _exit(3);
+    int out_val = 0;
+    socklen_t len = sizeof(out_val);
+    if (getsockopt(sv[0], SOL_SOCKET, SO_REUSEADDR, &out_val, &len) != 0) _exit(4);
+    close(sv[0]);
+    close(sv[1]);
 }
 
 static void action_erlang_clone_user_blocked(void) {
@@ -2440,11 +2558,139 @@ int main(void) {
         return 1;
     }
 
-    /* Test 132: socket() blocked with SIGSYS under Erlang profile */
-    if (expect_sigsys(action_erlang_socket_blocked)) {
-        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills socket() with SIGSYS (network denied)\n");
+    /* Test 132: chdir permitted under Erlang profile */
+    if (expect_success(action_erlang_chdir)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits chdir without SIGSYS\n");
     } else {
-        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted socket()!\n");
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on chdir!\n");
+        return 1;
+    }
+
+    /* Test 133: memfd_create permitted under Erlang profile */
+    if (expect_success(action_erlang_memfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits memfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on memfd_create!\n");
+        return 1;
+    }
+
+    /* Test 134: ftruncate permitted under Erlang profile */
+    if (expect_success(action_erlang_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits ftruncate without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 135: setsid permitted under Erlang profile */
+    if (expect_success(action_erlang_setsid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits setsid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on setsid!\n");
+        return 1;
+    }
+
+    /* Test 136: pselect6 permitted under Erlang profile */
+    if (expect_success(action_erlang_pselect6)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits pselect6 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on pselect6!\n");
+        return 1;
+    }
+
+    /* Test 137: close_range permitted under Erlang profile */
+    if (expect_success(action_erlang_close_range)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits close_range without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on close_range!\n");
+        return 1;
+    }
+
+    /* Test 138: socketpair(AF_UNIX) permitted under Erlang profile */
+    if (expect_success(action_erlang_socketpair_unix)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits socketpair(AF_UNIX) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on socketpair(AF_UNIX)!\n");
+        return 1;
+    }
+
+    /* Test 139: socketpair(AF_INET) killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_socketpair_inet_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills socketpair(AF_INET) with SIGSYS (AF_UNIX only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted socketpair(AF_INET)!\n");
+        return 1;
+    }
+
+    /* Test 140: socket() returns EPERM without crashing under Erlang profile */
+    if (expect_success(action_erlang_socket_returns_eperm)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG returns EPERM on socket() without crashing\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG socket() did not return EPERM!\n");
+        return 1;
+    }
+
+    /* Test 141: connect() killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_connect_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills connect() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted connect()!\n");
+        return 1;
+    }
+
+    /* Test 142: bind() killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_bind_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills bind() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted bind()!\n");
+        return 1;
+    }
+
+    /* Test 143: setfsuid(0) permitted under Erlang profile */
+    if (expect_success(action_erlang_setfsuid_zero)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits setfsuid(0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on setfsuid(0)!\n");
+        return 1;
+    }
+
+    /* Test 144: setfsuid(1000) killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_setfsuid_nonzero_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills setfsuid(non-zero) with SIGSYS (ID 0 only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted setfsuid(1000)!\n");
+        return 1;
+    }
+
+    /* Test 145: setfsgid(0) permitted under Erlang profile */
+    if (expect_success(action_erlang_setfsgid_zero)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits setfsgid(0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on setfsgid(0)!\n");
+        return 1;
+    }
+
+    /* Test 146: setfsgid(1000) killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_setfsgid_nonzero_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills setfsgid(non-zero) with SIGSYS (ID 0 only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted setfsgid(1000)!\n");
+        return 1;
+    }
+
+    /* Test 147: sendmsg and recvmsg permitted under Erlang profile */
+    if (expect_success(action_erlang_sendmsg_recvmsg)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits sendmsg and recvmsg on domain socketpair\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on sendmsg / recvmsg!\n");
+        return 1;
+    }
+
+    /* Test 148: getsockopt and setsockopt permitted under Erlang profile */
+    if (expect_success(action_erlang_getsockopt_setsockopt)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits getsockopt and setsockopt on domain socketpair\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on getsockopt / setsockopt!\n");
         return 1;
     }
 
@@ -2802,7 +3048,7 @@ int main(void) {
 
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 176 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 192 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

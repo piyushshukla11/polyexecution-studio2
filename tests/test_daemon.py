@@ -1584,9 +1584,6 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
 
     async def test_grpc_erlang_execution_with_real_native_runner(self) -> None:
         """Integration test verifying real gRPC Erlang ExecuteStream through NativeSandboxRunner."""
-        # SECCOMP_PROFILE_ERLANG (Slice 7) was approved without chdir / BEAM emulator syscalls,
-        # which are now authorized under SECCOMP_PROFILE_ELIXIR (Slice 8).
-        self.skipTest("SECCOMP_PROFILE_ERLANG awaits Tier A profile expansion authorization for BEAM emulator syscalls")
         import subprocess
 
         if not os.path.exists("sandbox/pes2-runner"):

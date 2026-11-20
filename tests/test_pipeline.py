@@ -1850,10 +1850,6 @@ class TestExecutionPipeline(unittest.TestCase):
         if not erl_adapter or not erl_adapter.is_installed:
             self.skipTest("Erlang not installed on host")
 
-        # SECCOMP_PROFILE_ERLANG (Slice 7) was approved without chdir / BEAM emulator syscalls,
-        # which are now authorized under SECCOMP_PROFILE_ELIXIR (Slice 8).
-        self.skipTest("SECCOMP_PROFILE_ERLANG awaits Tier A profile expansion authorization for BEAM emulator syscalls")
-
         runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
         pipeline = ExecutionPipeline(self.registry, runner)
 
@@ -1949,15 +1945,28 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(oom_res.signal, 9)
         self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
 
-        # 5. Network denial (socket blocked by policy)
+        # 5. Network denial (socket() returns EPERM via seccomp filter)
+        evil_src = (
+            "-module(solution).\n"
+            "-export([start/0]).\n"
+            "start() ->\n"
+            "    case gen_tcp:connect(\"127.0.0.1\", 80, []) of\n"
+            "        {error, eperm} ->\n"
+            "            io:format(\"NETWORK_DENIED_EPERM~n\"),\n"
+            "            halt(42);\n"
+            "        _ ->\n"
+            "            halt(1)\n"
+            "    end.\n"
+        )
         evil_req = ExecutionRequest(
             request_id="req-live-erlang-socket-blocked",
             language_id=LanguageId.ERLANG,
-            source_code="-module(solution).\n-export([start/0]).\nstart() -> gen_tcp:connect(\"127.0.0.1\", 80, []).\n",
+            source_code=evil_src,
         )
         evil_res = pipeline.execute(evil_req)
-        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
-        self.assertEqual(evil_res.signal, 31)
+        self.assertEqual(evil_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(evil_res.exit_code, 42)
+        self.assertIn("NETWORK_DENIED_EPERM", evil_res.stdout)
 
         # 6. Verify zero cgroup leftovers
         leftovers = [
