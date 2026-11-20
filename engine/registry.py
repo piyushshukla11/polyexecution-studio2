@@ -587,6 +587,46 @@ class RuntimeRegistry:
         )
         self.register(erlang_adapter)
 
+        # Elixir runtime (Phase 5 Slice 8)
+        elixir_bin = "/usr/bin/elixir" if os.path.exists("/usr/bin/elixir") else shutil.which("elixir") or "/usr/bin/elixir"
+        elixir_eval_harness = (
+            'Code.require_file("/workspace/solution.exs"); '
+            'cond do '
+            'function_exported?(Solution, :start, 0) -> Solution.start(); '
+            'function_exported?(Solution, :main, 1) -> Solution.main([]); '
+            'function_exported?(Solution, :main, 0) -> Solution.main(); '
+            'true -> :ok '
+            'end'
+        )
+        elixir_adapter = RuntimeAdapter(
+            id=LanguageId.ELIXIR,
+            display_name="Elixir",
+            official_version="Elixir 1.20",
+            installed_version=detect_tool_version(elixir_bin, version_arg="--short-version"),
+            family=RuntimeFamily.INTERPRETED,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=elixir_bin,
+                execution_args=[
+                    "--erl", "+S 2:2 +A 2",
+                    "-e",
+                    elixir_eval_harness,
+                ],
+                source_filename="solution.exs",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=10000,
+                    cpu_ms=5000,
+                    memory_kb=196608,
+                    pids=64,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.ELIXIR,
+            ),
+            seccomp_policy=SeccompPolicyProfile.ELIXIR,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(elixir_adapter)
+
         # Truthfully unsupported Phase 5 runtimes (unavailable or unreachable in sandbox rootfs)
 
         py2_adapter = RuntimeAdapter(
@@ -624,24 +664,6 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(swift_adapter)
-
-        elixir_adapter = RuntimeAdapter(
-            id=LanguageId.ELIXIR,
-            display_name="Elixir",
-            official_version="Elixir 1.17",
-            installed_version=detect_tool_version("/usr/bin/elixir"),
-            family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/elixir",
-                execution_args=[],
-                source_filename="solution.exs",
-                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
-            ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
-            cleanup_spec=CleanupSpec(),
-        )
-        self.register(elixir_adapter)
 
         csharp_adapter = RuntimeAdapter(
             id=LanguageId.CSHARP,

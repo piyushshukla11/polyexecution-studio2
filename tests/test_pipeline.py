@@ -16,7 +16,7 @@ from engine.models import (
 )
 from engine.pipeline import ExecutionPipeline
 from engine.registry import RuntimeRegistry
-from engine.runner import MockSandboxRunner
+from engine.runner import MockSandboxRunner, NativeSandboxRunner
 
 
 class ArtifactCreatingMockRunner(MockSandboxRunner):
@@ -988,6 +988,57 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_elixir_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 500, 480, 65536, "hello elixir\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-elixir-ok",
+            language_id=LanguageId.ELIXIR,
+            source_code='IO.puts("hello elixir")\n',
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello elixir\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/elixir")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.ELIXIR)
+
+    def test_elixir_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 500, 480, 65536, "", "** (ArithmeticError) bad argument in arithmetic expression\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-elixir-err",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def start do\n    1 / 0\n  end\nend\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("ArithmeticError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
     def test_typescript_success_milestones(self) -> None:
         # Mock compilation and execution success
         self.runner.queue_result(
@@ -1086,7 +1137,6 @@ class TestExecutionPipeline(unittest.TestCase):
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ELIXIR,
             LanguageId.CSHARP,
         ]
         for lang_id in unsupported:
@@ -1800,6 +1850,10 @@ class TestExecutionPipeline(unittest.TestCase):
         if not erl_adapter or not erl_adapter.is_installed:
             self.skipTest("Erlang not installed on host")
 
+        # SECCOMP_PROFILE_ERLANG (Slice 7) was approved without chdir / BEAM emulator syscalls,
+        # which are now authorized under SECCOMP_PROFILE_ELIXIR (Slice 8).
+        self.skipTest("SECCOMP_PROFILE_ERLANG awaits Tier A profile expansion authorization for BEAM emulator syscalls")
+
         runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
         pipeline = ExecutionPipeline(self.registry, runner)
 
@@ -1904,6 +1958,164 @@ class TestExecutionPipeline(unittest.TestCase):
         evil_res = pipeline.execute(evil_req)
         self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
         self.assertEqual(evil_res.signal, 31)
+
+        # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_execution_elixir(self) -> None:
+        try:
+            res = subprocess.run(["unshare", "-Ur", "true"], capture_output=True, timeout=2)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        elixir_adapter = self.registry.get(LanguageId.ELIXIR)
+        if not elixir_adapter or not elixir_adapter.is_installed:
+            self.skipTest("Elixir not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal execution with Solution.start/0: covers exact /workspace/solution.exs path
+        elixir_src = (
+            "defmodule Solution do\n"
+            "  def start do\n"
+            "    IO.puts(\"ELIXIR_START_SUCCESS\")\n"
+            "  end\n"
+            "end\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-elixir-start",
+            language_id=LanguageId.ELIXIR,
+            source_code=elixir_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("ELIXIR_START_SUCCESS", ok_res.stdout)
+
+        # 1b. Normal execution with Solution.main/1
+        elixir_main1_src = (
+            "defmodule Solution do\n"
+            "  def main(_args) do\n"
+            "    IO.puts(\"ELIXIR_MAIN1_SUCCESS\")\n"
+            "  end\n"
+            "end\n"
+        )
+        main1_req = ExecutionRequest(
+            request_id="req-live-elixir-main1",
+            language_id=LanguageId.ELIXIR,
+            source_code=elixir_main1_src,
+        )
+        main1_res = pipeline.execute(main1_req)
+        self.assertEqual(main1_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(main1_res.exit_code, 0)
+        self.assertIn("ELIXIR_MAIN1_SUCCESS", main1_res.stdout)
+
+        # 1c. Normal execution with top-level script statements
+        elixir_top_src = 'IO.puts("ELIXIR_TOP_SUCCESS")\n'
+        top_req = ExecutionRequest(
+            request_id="req-live-elixir-top",
+            language_id=LanguageId.ELIXIR,
+            source_code=elixir_top_src,
+        )
+        top_res = pipeline.execute(top_req)
+        self.assertEqual(top_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(top_res.exit_code, 0)
+        self.assertIn("ELIXIR_TOP_SUCCESS", top_res.stdout)
+
+        # 2. Syntax error
+        syntax_err_req = ExecutionRequest(
+            request_id="req-live-elixir-syntax-err",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def bad( do: :err\nend\n",
+        )
+        syntax_err_res = pipeline.execute(syntax_err_req)
+        self.assertEqual(syntax_err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(syntax_err_res.exit_code, 1)
+
+        # 2b. Runtime exception (badarith)
+        crash_req = ExecutionRequest(
+            request_id="req-live-elixir-crash",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def start do\n    1 / 0\n  end\nend\n",
+        )
+        crash_res = pipeline.execute(crash_req)
+        self.assertEqual(crash_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(crash_res.exit_code, 1)
+        self.assertIn("ArithmeticError", crash_res.stderr)
+
+        # 3a. Wall timeout
+        wall_to_req = ExecutionRequest(
+            request_id="req-live-elixir-wall-timeout",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def start do\n    Process.sleep(10000)\n  end\nend\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=196608, pids=64, max_output_bytes=65536),
+        )
+        wall_to_res = pipeline.execute(wall_to_req)
+        self.assertEqual(wall_to_res.final_status, Milestone.TIMEOUT)
+
+        # 3b. CPU timeout
+        cpu_to_req = ExecutionRequest(
+            request_id="req-live-elixir-cpu-timeout",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def loop, do: loop()\n  def start, do: loop()\nend\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=196608, pids=64, max_output_bytes=65536),
+        )
+        cpu_to_res = pipeline.execute(cpu_to_req)
+        self.assertEqual(cpu_to_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement at adapter default (192 MiB)
+        oom_src = (
+            "defmodule Solution do\n"
+            "  def bomb(acc) do\n"
+            "    bomb([:binary.copy(<<42>>, 20000000) | acc])\n"
+            "  end\n"
+            "  def start, do: bomb([])\n"
+            "end\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-elixir-oom-default-192mb",
+            language_id=LanguageId.ELIXIR,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
+
+        # 5. Network denial (socket() returns EPERM via seccomp filter)
+        evil_src = (
+            "defmodule Solution do\n"
+            "  def start do\n"
+            "    case :gen_tcp.connect({127, 0, 0, 1}, 80, []) do\n"
+            "      {:error, :eperm} ->\n"
+            "        IO.puts(\"NETWORK_DENIED_EPERM\")\n"
+            "        System.halt(42)\n"
+            "      {:ok, _} ->\n"
+            "        IO.puts(\"CONNECTED_UNEXPECTED\")\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+        )
+        evil_req = ExecutionRequest(
+            request_id="req-live-elixir-connect-blocked",
+            language_id=LanguageId.ELIXIR,
+            source_code=evil_src,
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(evil_res.exit_code, 42)
+        self.assertIn("NETWORK_DENIED_EPERM", evil_res.stdout)
 
         # 6. Verify zero cgroup leftovers
         leftovers = [

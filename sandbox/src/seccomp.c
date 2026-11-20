@@ -5,6 +5,7 @@
 #include <linux/sched.h>
 #include <seccomp.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 
 #ifndef PR_SET_VMA
 #define PR_SET_VMA 0x53564d41
@@ -32,7 +33,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         profile != SECCOMP_PROFILE_PHP &&
         profile != SECCOMP_PROFILE_DART &&
         profile != SECCOMP_PROFILE_RACKET &&
-        profile != SECCOMP_PROFILE_ERLANG) {
+        profile != SECCOMP_PROFILE_ERLANG &&
+        profile != SECCOMP_PROFILE_ELIXIR) {
         errno = EINVAL;
         return -1;
     }
@@ -447,6 +449,104 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
                 errno = EINVAL;
                 return -1;
             }
+        }
+
+        /*
+         * Restrict prctl strictly to PR_SET_NAME and PR_GET_NAME:
+         * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_GET_NAME)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (profile == SECCOMP_PROFILE_ELIXIR) {
+        /*
+         * Elixir (compiled to BEAM bytecode running on BEAM SMP via launcher wrapper) permissions:
+         * - getpgrp / getresuid / getresgid: credential and process group inspection during BEAM and launcher init
+         * - wait4: reaping child launcher / helper processes
+         * - sched_getaffinity: CPU scheduler topology detection for BEAM SMP
+         * - epoll_create / epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
+         *   BEAM asynchronous I/O driver event polling loop
+         * - poll / ppoll: file descriptor polling
+         * - timerfd_create / timerfd_settime / timerfd_gettime: kernel timerfd integration for BEAM timer driver
+         * - chdir: invoked by /usr/bin/elixir launcher script during directory path resolution (dirname/pwd)
+         * - memfd_create / ftruncate: JIT compilation buffer management in BEAM emulator
+         * - setsid / pselect6 / close_range: process group separation and FD hygiene in erl_child_setup
+         * - sendmsg / recvmsg / getsockopt / setsockopt: stream communication across internal AF_UNIX domain socketpair
+         */
+        const int elixir_allowed[] = {
+            SCMP_SYS(getpgrp),
+            SCMP_SYS(getresuid),
+            SCMP_SYS(getresgid),
+            SCMP_SYS(wait4),
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(epoll_create),
+            SCMP_SYS(epoll_create1),
+            SCMP_SYS(epoll_ctl),
+            SCMP_SYS(epoll_wait),
+            SCMP_SYS(epoll_pwait),
+            SCMP_SYS(epoll_pwait2),
+            SCMP_SYS(poll),
+            SCMP_SYS(ppoll),
+            SCMP_SYS(timerfd_create),
+            SCMP_SYS(timerfd_settime),
+            SCMP_SYS(timerfd_gettime),
+            SCMP_SYS(chdir),
+            SCMP_SYS(memfd_create),
+            SCMP_SYS(ftruncate),
+            SCMP_SYS(setsid),
+            SCMP_SYS(pselect6),
+            SCMP_SYS(close_range),
+            SCMP_SYS(sendmsg),
+            SCMP_SYS(recvmsg),
+            SCMP_SYS(getsockopt),
+            SCMP_SYS(setsockopt)
+        };
+        for (size_t i = 0; i < sizeof(elixir_allowed) / sizeof(elixir_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, elixir_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * Permit socketpair strictly for AF_UNIX internal communication (erl_child_setup).
+         * Other domains (AF_INET, etc.) are default-denied and terminate with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socketpair), 1,
+                             SCMP_A0(SCMP_CMP_EQ, AF_UNIX)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Return EPERM for socket() so internal resolver initialization falls back
+         * cleanly to offline mode without creating descriptors or crashing the process.
+         * Connection and other network operations (connect, bind, listen, accept) remain default-denied (SIGSYS).
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Restrict setfsuid and setfsgid strictly to ID 0 (the sandbox's sole mapped UID/GID).
+         * Any attempt to alter filesystem identity to non-zero IDs is denied with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(setfsuid), 1,
+                             SCMP_A0(SCMP_CMP_EQ, 0)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(setfsgid), 1,
+                             SCMP_A0(SCMP_CMP_EQ, 0)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
         }
 
         /*

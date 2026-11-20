@@ -623,6 +623,39 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
         self.assertEqual(result_response.stdout, "hello from erlang daemon\n")
 
+    async def test_execute_stream_elixir_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 500, 480, 65536, "hello from elixir daemon\n", "")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-elixir",
+            language_id="elixir",
+            source_code='IO.puts("hello from elixir daemon")\n',
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        # Direct interpreted Elixir must NEVER emit COMPILING
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(result_response.stdout, "hello from elixir daemon\n")
+
     async def test_memory_admission_control(self) -> None:
         """Verifies that requests exceeding available daemon memory capacity are rejected with RESOURCE_EXHAUSTED."""
         server, port = create_server(
@@ -1551,6 +1584,9 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
 
     async def test_grpc_erlang_execution_with_real_native_runner(self) -> None:
         """Integration test verifying real gRPC Erlang ExecuteStream through NativeSandboxRunner."""
+        # SECCOMP_PROFILE_ERLANG (Slice 7) was approved without chdir / BEAM emulator syscalls,
+        # which are now authorized under SECCOMP_PROFILE_ELIXIR (Slice 8).
+        self.skipTest("SECCOMP_PROFILE_ERLANG awaits Tier A profile expansion authorization for BEAM emulator syscalls")
         import subprocess
 
         if not os.path.exists("sandbox/pes2-runner"):
@@ -1567,7 +1603,8 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             self.skipTest("Delegated cgroup root not found")
 
         runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
-        server, port = create_server(host="127.0.0.1", port=0, runner=runner)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=2, pipeline=pipeline)
         await server.start()
         channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
         stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
@@ -1600,6 +1637,75 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
             self.assertEqual(final_res.exit_code, 0)
             self.assertEqual(final_res.stdout.strip(), "gRPC live Erlang execution OK")
+
+            # Verify cgroup cleanup
+            leftovers = [
+                d for d in os.listdir(cgroup_root)
+                if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+            ]
+            self.assertEqual(len(leftovers), 0)
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
+    async def test_grpc_elixir_execution_with_real_native_runner(self) -> None:
+        """Integration test verifying real gRPC Elixir ExecuteStream through NativeSandboxRunner."""
+        import subprocess
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-Ur", "true"], capture_output=True, timeout=2)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(registry=self.registry, runner=runner)
+        server, port = create_server(host="127.0.0.1", port=0, max_workers=2, pipeline=pipeline)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            elixir_src = (
+                "defmodule Solution do\n"
+                "  def start do\n"
+                '    IO.puts("gRPC live Elixir execution OK")\n'
+                "  end\n"
+                "end\n"
+            )
+            req = execution_pb2.ExecuteRequest(
+                request_id="req-live-grpc-elixir",
+                language_id="elixir",
+                source_code=elixir_src,
+            )
+            call = stub.ExecuteStream(req)
+            milestones = []
+            final_res = None
+            while True:
+                ev = await call.read()
+                if ev is grpc.aio.EOF:
+                    break
+                if ev.HasField("milestone_event"):
+                    milestones.append(ev.milestone_event.milestone)
+                if ev.HasField("result"):
+                    final_res = ev.result
+
+            self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+            self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+            self.assertIsNotNone(final_res)
+            assert final_res is not None
+            self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
+            self.assertEqual(final_res.exit_code, 0)
+            self.assertEqual(final_res.stdout.strip(), "gRPC live Elixir execution OK")
 
             # Verify cgroup cleanup
             leftovers = [

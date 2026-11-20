@@ -72,6 +72,7 @@ class SeccompPolicyProfile(str, Enum):
     DART = "dart"
     RACKET = "racket"
     ERLANG = "erlang"
+    ELIXIR = "elixir"
 
 
 MAX_SOURCE_BYTES: int = 65536

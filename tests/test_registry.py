@@ -321,11 +321,29 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 64)
         self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
 
+    def test_elixir_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.ELIXIR)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.runner_bin, "/usr/bin/elixir")
+        self.assertEqual(adapter.execution_spec.source_filename, "solution.exs")
+        self.assertEqual(adapter.execution_spec.execution_args[:2], ["--erl", "+S 2:2 +A 2"])
+        self.assertEqual(adapter.execution_spec.execution_args[2], "-e")
+        self.assertIn("/workspace/solution.exs", adapter.execution_spec.execution_args[3])
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.ELIXIR)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.ELIXIR)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 196608)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 10000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 5000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 64)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ELIXIR,
             LanguageId.CSHARP,
         ]
         for lang_id in unsupported:
@@ -350,7 +368,6 @@ class TestRuntimeRegistry(unittest.TestCase):
         for lang_id in [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ELIXIR,
         ]:
             ad = self.registry.get(lang_id)
             assert ad is not None

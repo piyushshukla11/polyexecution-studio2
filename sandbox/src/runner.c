@@ -277,6 +277,7 @@ static int child_main(void *opaque) {
         "TMPDIR=/tmp",
         "LANG=C",
         "LD_LIBRARY_PATH=/usr/lib/jvm/default/lib:/usr/lib/jvm/default/lib/server",
+        "ERL_ROOTDIR=/usr/lib/erlang",
         NULL
     };
     execve(ctx->config->target_bin, ctx->config->target_argv, safe_env);
@@ -727,6 +728,7 @@ int main(int argc, char **argv) {
             else if (strcmp(prof, "dart") == 0) config.seccomp_profile = SECCOMP_PROFILE_DART;
             else if (strcmp(prof, "racket") == 0) config.seccomp_profile = SECCOMP_PROFILE_RACKET;
             else if (strcmp(prof, "erlang") == 0) config.seccomp_profile = SECCOMP_PROFILE_ERLANG;
+            else if (strcmp(prof, "elixir") == 0) config.seccomp_profile = SECCOMP_PROFILE_ELIXIR;
             else {
                 fprintf(stderr, "runner: invalid or unsupported seccomp profile '%s'\n", prof);
                 return STATUS_SANDBOX_ERROR;
@@ -756,6 +758,6 @@ int main(int argc, char **argv) {
     return status;
 
 usage:
-    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart|racket|erlang] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart|racket|erlang|elixir] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
     return STATUS_SANDBOX_ERROR;
 }
