@@ -124,17 +124,20 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
 
 ### Phase 6: Disposable SQL Database Sandboxes
 - Target engines: **SQLite, MySQL, PostgreSQL, MS SQL Server, Oracle SQL**.
-- Slice 1: **SQLite (`sqlite`) vertical slice**:
+- Complete SQLite (`sqlite`) ephemeral in-memory sandbox:
   - Implemented single-stage isolated in-memory SQL execution via trusted Python 3 `sqlite3` API harness (`/usr/bin/python3 -I -c "<sqlite_harness_script>" /workspace/solution.sql`).
-  - Ephemeral `:memory:` database instance created strictly per request; zero state persistence across executions.
+  - Ephemeral `:memory:` database instance created strictly per request with `isolation_level=None` autocommit semantics; zero host state pollution, disk persistence, or database daemon dependencies.
+  - Native transaction control: autocommit mode allows explicit `BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, and `RELEASE` statements without driver transaction collisions.
   - Interactive shell bypass: execution completely avoids interactive `/usr/bin/sqlite3` shell, preventing dot-command execution (`.shell`, `.import`, `.output`, `.system`). Any dot-commands fail as syntax errors at the SQL engine level (`near ".": syntax error`).
+  - Robust result serialization: handles tabular columns, rows, NULL values (`None` -> `null`), and binary BLOBs (`bytes` serialized to hex strings) with fallback for non-primitive types, emitting valid structured JSON (`{"columns": [...], "rows": [...]}`).
   - Engine-level security controls via SQLite C/Python API:
     - Extension loading explicitly disabled (`conn.enable_load_extension(False)` if supported).
-    - Authorizer callback (`conn.set_authorizer`): blocks `SQLITE_ATTACH` (`not authorized`), preventing user queries from attaching or accessing host/disk database files.
+    - Authorizer callback (`conn.set_authorizer`): blocks `SQLITE_ATTACH` and `SQLITE_DETACH` (`not authorized`), preventing user queries from attaching or accessing host/disk database files.
+    - File-affecting PRAGMAs blocked: authorizer rejects dangerous PRAGMAs (`data_store_directory`, `temp_store_directory`, `temp_store`, `database_list`, `journal_mode`, `journal_size_limit`, `wal_checkpoint`, `auto_vacuum`, etc.).
     - Explicit `VACUUM INTO` defense: SQLite authorizer lacks a dedicated `SQLITE_VACUUM` action code, and denying `ATTACH` does not reliably guarantee denial of `VACUUM INTO`. The harness inspects statement syntax outside comments and strings (matching across newlines and whitespace via `re.DOTALL`) to strictly reject `VACUUM INTO` commands (`SQLite error: authorization denied: VACUUM INTO is disabled`), guaranteeing untrusted SQL cannot create or dump database files into the writable `/workspace`.
-    - Opcode progress handler (`conn.set_progress_handler`): evaluates execution every 100 VM instructions and aborts when cumulative ticks reach `1,000,000 // 100 = 10,000` (`ticks >= max_ticks`), stopping at the exact 1,000,000-opcode interval (`interrupted`) and terminating runaway recursive queries (`WITH RECURSIVE`).
+    - Opcode progress handler (`conn.set_progress_handler`): evaluates execution every 100 VM instructions and aborts when cumulative ticks reach `1,000,000 // 100 = 10,000` (`ticks >= max_ticks`), stopping at the exact 1,000,000-opcode interval (`interrupted`) and terminating runaway recursive queries (`WITH RECURSIVE`) or Cartesian joins.
     - Semicolon splitting & parser regression resilience: statements split with `sqlite3.complete_statement`, preserving semicolons inside single/double-quoted string literals and compound trigger blocks (`CREATE TRIGGER ... BEGIN ...; ...; END;`), while filtering empty statements and comments (`--` and `/* ... */`).
-    - Row count bounding: queries capped at 1,000 rows (`cur.fetchmany(1000)`), serializing tabular output as structured JSON (`{"columns": [...], "rows": [...]}`).
+    - Row count bounding: queries capped at 1,000 rows (`cur.fetchmany(1000)`).
   - Truthful installed version reporting: reports the exact SQLite version linked into Python's `sqlite3` execution module (`sqlite3.sqlite_version`), guaranteeing runtime metadata accurately matches query execution.
   - Truthful milestone emissions: `ACCEPTED` -> `RUNNING` -> `COMPLETED` / `RUNTIME_ERROR` (never emits synthetic `COMPILING` milestones).
   - Measured resource bounds: 2,000 ms CPU timeout, 3,000 ms wall timeout, 64 MiB cgroup memory limit (`65536 KiB`), 16 PIDs limit, 64 KiB output cap.

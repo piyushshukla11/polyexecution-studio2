@@ -1,9 +1,11 @@
 """Tests for ExecutionPipeline, truthful milestone emissions, and security guarantees."""
 
 import glob
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 
 from engine.models import (
@@ -1605,6 +1607,61 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(ticks, 9999)
         self.assertEqual(progress_cb(), 1)
         self.assertEqual(ticks, 10000)
+
+    def test_sqlite_harness_supports_manual_transactions(self) -> None:
+        """Verifies that SQLite harness supports autocommit mode and manual BEGIN/COMMIT blocks without conflict."""
+        adapter = self.registry.get(LanguageId.SQLITE)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sql_path = os.path.join(tmpdir, "solution.sql")
+            with open(sql_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "CREATE TABLE t (id INT, val TEXT);\n"
+                    "INSERT INTO t VALUES (1, 'pre_tx');\n"
+                    "BEGIN TRANSACTION;\n"
+                    "INSERT INTO t VALUES (2, 'in_tx');\n"
+                    "COMMIT;\n"
+                    "SELECT * FROM t;\n"
+                )
+
+            res = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sql_path],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(res.returncode, 0, f"stderr: {res.stderr}")
+            data = json.loads(res.stdout)
+            self.assertEqual(data["columns"], ["id", "val"])
+            self.assertEqual(data["rows"], [[1, "pre_tx"], [2, "in_tx"]])
+
+    def test_sqlite_harness_serializes_binary_blobs_and_nulls(self) -> None:
+        """Verifies that SQLite harness serializes binary BLOBs as hex strings and NULLs as JSON null without error."""
+        adapter = self.registry.get(LanguageId.SQLITE)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sql_path = os.path.join(tmpdir, "solution.sql")
+            with open(sql_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "CREATE TABLE t (id INT, data BLOB, note TEXT);\n"
+                    "INSERT INTO t VALUES (1, X'484558', NULL);\n"
+                    "SELECT * FROM t;\n"
+                )
+
+            res = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sql_path],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(res.returncode, 0, f"stderr: {res.stderr}")
+            data = json.loads(res.stdout)
+            self.assertEqual(data["columns"], ["id", "data", "note"])
+            self.assertEqual(data["rows"], [[1, "484558", None]])
 
 
 

@@ -43,6 +43,7 @@ PolyExecution Studio 2 is a high-performance, multi-language remote execution en
 | 25 | **Pandas** | `Python 3.14 + Pandas 3.1.0 + NumPy 2.5.4` | `python3` installed; libs missing | Data Science |
 | 26 | **React** | `Node.js 18 + React 18.2.0` | `Node.js` installed | Web Framework |
 | 27 | **Vanilla JS** | `ECMAScript 2023` (standard ECMAScript runtime) | Dedicated harness missing | Interpreted / V8 |
+| 28 | **SQLite** | `SQLite 3.54 (in-memory)` | `SQLite 3.54.0` installed | SQL Database |
 
 ---
 
