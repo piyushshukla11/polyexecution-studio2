@@ -385,6 +385,11 @@ class TestRuntimeRegistry(unittest.TestCase):
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
         ]
+        if not os.path.exists("/usr/bin/elixir"):
+            unsupported.append(LanguageId.ELIXIR)
+        csharp_adapter = self.registry.get(LanguageId.CSHARP)
+        if csharp_adapter and not csharp_adapter.is_installed:
+            unsupported.append(LanguageId.CSHARP)
         for lang_id in unsupported:
             adapter = self.registry.get(lang_id)
             self.assertIsNotNone(adapter, f"{lang_id} should be registered in registry")
@@ -398,6 +403,77 @@ class TestRuntimeRegistry(unittest.TestCase):
         for lang_id in [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
+        ]:
+            ad = self.registry.get(lang_id)
+            assert ad is not None
+            self.assertEqual(ad.installed_version, "Not installed on host")
+
+    def test_sqlite_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertTrue(adapter.is_installed)
+        self.assertTrue(adapter.installed_version.startswith("3.54."))
+        self.assertEqual(adapter.family, RuntimeFamily.DATABASE)
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.runner_bin, "/usr/bin/python3")
+        self.assertEqual(adapter.execution_spec.source_filename, "solution.sql")
+        self.assertEqual(adapter.execution_spec.execution_args[:2], ["-I", "-c"])
+        harness = adapter.execution_spec.execution_args[2]
+        self.assertIn("def run():", harness)
+        self.assertIn("max_opcodes = 1000000", harness)
+        self.assertIn("opcode_interval = 100", harness)
+        self.assertIn("max_ticks = max_opcodes // opcode_interval", harness)
+        self.assertIn("ticks >= max_ticks", harness)
+        self.assertIn("sqlite3.SQLITE_ATTACH", harness)
+        self.assertIn("sqlite3.SQLITE_DETACH", harness)
+        self.assertIn("file_pragmas", harness)
+        self.assertIn("temp_store_directory", harness)
+        self.assertIn("database_list", harness)
+        self.assertIn("journal_mode", harness)
+        self.assertIn("VACUUM", harness)
+        self.assertIn("INTO", harness)
+        self.assertIn("re.DOTALL", harness)
+        self.assertIn("VACUUM INTO is disabled", harness)
+        self.assertEqual(adapter.execution_spec.execution_args[3], "/workspace/solution.sql")
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.PYTHON)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.PYTHON)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 3000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 2000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 65536)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 16)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
+
+    def test_phase6_unsupported_databases_truthful(self) -> None:
+        unsupported = [
+            LanguageId.POSTGRESQL,
+            LanguageId.MYSQL,
+            LanguageId.MSSQL,
+            LanguageId.ORACLE,
+        ]
+        for lang_id in unsupported:
+            adapter = self.registry.get(lang_id)
+            self.assertIsNotNone(adapter, f"{lang_id} should be registered in registry")
+            assert adapter is not None
+            self.assertFalse(
+                adapter.is_installed,
+                f"{lang_id} server toolchain is uninstalled and must be truthfully reported uninstalled/unsupported",
+            )
+            self.assertEqual(adapter.family, RuntimeFamily.DATABASE)
+            self.assertIsNone(adapter.compile_spec)
+
+        pg_adapter = self.registry.get(LanguageId.POSTGRESQL)
+        assert pg_adapter is not None
+        self.assertTrue(
+            pg_adapter.installed_version.startswith("Incomplete toolchain on host"),
+            f"Expected PostgreSQL to report incomplete toolchain: {pg_adapter.installed_version}",
+        )
+        self.assertIn("server daemon uninstalled", pg_adapter.installed_version)
+
+        for lang_id in [
+            LanguageId.MYSQL,
+            LanguageId.MSSQL,
+            LanguageId.ORACLE,
         ]:
             ad = self.registry.get(lang_id)
             assert ad is not None

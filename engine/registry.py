@@ -50,6 +50,30 @@ def detect_tool_version(binary_path: str, version_arg: str = "--version") -> str
         return f"Incomplete toolchain on host (inspection error: {exc})"
 
 
+def detect_python_sqlite_version(python_bin: str) -> str:
+    """Inspect SQLite library version linked by the Python runtime executing the SQLite adapter."""
+    if not os.path.exists(python_bin):
+        basename = os.path.basename(python_bin)
+        user_path = shutil.which(basename)
+        if user_path:
+            return f"Unavailable to sandbox rootfs (installed in user path: {user_path})"
+        return "Not installed on host"
+    try:
+        proc = subprocess.run(
+            [python_bin, "-c", "import sqlite3; print(sqlite3.sqlite_version)"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return "Incomplete toolchain on host (sqlite3 module failed to load)"
+        ver = proc.stdout.strip()
+        return ver if ver else "Installed (version unknown)"
+    except Exception as exc:
+        return f"Incomplete toolchain on host (inspection error: {exc})"
+
+
 class RuntimeRegistry:
     """Central registry of typed RuntimeAdapters."""
 
@@ -745,3 +769,213 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(csharp_adapter)
+
+        # Phase 6: Disposable SQL Database Sandboxes (SQLite Slice 1)
+        sqlite_harness_script = (
+            "import json, os, re, sqlite3, sys\n"
+            "\n"
+            "def run():\n"
+            "    target = sys.argv[1] if len(sys.argv) > 1 else '/workspace/solution.sql'\n"
+            "    conn = sqlite3.connect(':memory:')\n"
+            "    if hasattr(conn, 'enable_load_extension'):\n"
+            "        try:\n"
+            "            conn.enable_load_extension(False)\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    try:\n"
+            "        conn.execute('PRAGMA temp_store = MEMORY;')\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "    file_pragmas = {\n"
+            "        'data_store_directory',\n"
+            "        'temp_store_directory',\n"
+            "        'temp_store',\n"
+            "        'database_list',\n"
+            "        'journal_mode',\n"
+            "        'journal_size_limit',\n"
+            "        'wal_checkpoint',\n"
+            "        'wal_autocheckpoint',\n"
+            "        'auto_vacuum',\n"
+            "        'incremental_vacuum',\n"
+            "        'locking_mode',\n"
+            "        'mmap_size',\n"
+            "        'page_size',\n"
+            "        'max_page_count',\n"
+            "        'synchronous',\n"
+            "        'default_synchronous',\n"
+            "        'cache_spill',\n"
+            "    }\n"
+            "    def authorizer(action, p1, p2, dbname, trigger):\n"
+            "        if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):\n"
+            "            return sqlite3.SQLITE_DENY\n"
+            "        if action == sqlite3.SQLITE_PRAGMA:\n"
+            "            pname = (p1 or '').lower()\n"
+            "            if pname in file_pragmas:\n"
+            "                return sqlite3.SQLITE_DENY\n"
+            "        return sqlite3.SQLITE_OK\n"
+            "    conn.set_authorizer(authorizer)\n"
+            "    max_opcodes = 1000000\n"
+            "    opcode_interval = 100\n"
+            "    max_ticks = max_opcodes // opcode_interval\n"
+            "    ticks = 0\n"
+            "    def progress_cb():\n"
+            "        nonlocal ticks\n"
+            "        ticks += 1\n"
+            "        return 1 if ticks >= max_ticks else 0\n"
+            "    conn.set_progress_handler(progress_cb, opcode_interval)\n"
+            "    try:\n"
+            "        with open(target, 'r', encoding='utf-8') as f:\n"
+            "            content = f.read()\n"
+            "    except Exception as e:\n"
+            "        sys.stderr.write(f'Failed to read submission: {e}\\n')\n"
+            "        sys.exit(1)\n"
+            "    cur = conn.cursor()\n"
+            "    stmts = []\n"
+            "    buf = ''\n"
+            "    for token in content.split(';'):\n"
+            "        if not token.strip() and not buf:\n"
+            "            continue\n"
+            "        buf += token + ';'\n"
+            "        if sqlite3.complete_statement(buf):\n"
+            "            cleaned = re.sub(r'/\\*.*?\\*/', ' ', buf, flags=re.DOTALL)\n"
+            "            cleaned = re.sub(r'--[^\\r\\n]*', ' ', cleaned)\n"
+            "            if cleaned.replace(';', '').strip():\n"
+            "                stmts.append(buf.strip())\n"
+            "            buf = ''\n"
+            "    if buf.strip():\n"
+            "        cleaned = re.sub(r'/\\*.*?\\*/', ' ', buf, flags=re.DOTALL)\n"
+            "        cleaned = re.sub(r'--[^\\r\\n]*', ' ', cleaned)\n"
+            "        if cleaned.replace(';', '').strip():\n"
+            "            stmts.append(buf.strip())\n"
+            "    results = []\n"
+            "    try:\n"
+            "        for s in stmts:\n"
+            "            stripped = re.sub(r\"'(?:''|[^'])*'|\\\"(?:\\\"\\\"|[^\\\"])*\\\"|/\\*.*?\\*/|--[^\\r\\n]*\", ' ', s, flags=re.DOTALL)\n"
+            "            if re.search(r'\\bVACUUM\\b.*?\\bINTO\\b', stripped, re.IGNORECASE | re.DOTALL):\n"
+            "                sys.stderr.write('SQLite error: authorization denied: VACUUM INTO is disabled\\n')\n"
+            "                sys.exit(1)\n"
+            "            cur.execute(s)\n"
+            "            if cur.description:\n"
+            "                cols = [d[0] for d in cur.description]\n"
+            "                rows = [list(r) for r in cur.fetchmany(1000)]\n"
+            "                results.append({'columns': cols, 'rows': rows})\n"
+            "        conn.commit()\n"
+            "    except Exception as e:\n"
+            "        sys.stderr.write(f'SQLite error: {e}\\n')\n"
+            "        sys.exit(1)\n"
+            "    finally:\n"
+            "        conn.close()\n"
+            "    if len(results) == 1:\n"
+            "        print(json.dumps(results[0]))\n"
+            "    elif len(results) > 1:\n"
+            "        print(json.dumps(results))\n"
+            "    else:\n"
+            "        print(json.dumps({'columns': [], 'rows': []}))\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            "    run()\n"
+        )
+
+        sqlite_adapter = RuntimeAdapter(
+            id=LanguageId.SQLITE,
+            display_name="SQLite",
+            official_version="SQLite 3.54 (in-memory)",
+            installed_version=detect_python_sqlite_version(python_bin),
+            family=RuntimeFamily.DATABASE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=python_bin,
+                execution_args=["-I", "-c", sqlite_harness_script, "/workspace/solution.sql"],
+                source_filename="solution.sql",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=3000,
+                    cpu_ms=2000,
+                    memory_kb=65536,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.PYTHON,
+            ),
+            seccomp_policy=SeccompPolicyProfile.PYTHON,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(sqlite_adapter)
+
+        # Truthfully unsupported Phase 6 database runtimes (server toolchains uninstalled or absent)
+        psql_bin = "/usr/bin/psql"
+        if os.path.exists(psql_bin) and not os.path.exists("/usr/bin/postgres"):
+            psql_installed = "Incomplete toolchain on host (psql client present, server daemon uninstalled)"
+        else:
+            psql_installed = detect_tool_version(psql_bin)
+
+        postgresql_adapter = RuntimeAdapter(
+            id=LanguageId.POSTGRESQL,
+            display_name="PostgreSQL",
+            official_version="PostgreSQL 18",
+            installed_version=psql_installed,
+            family=RuntimeFamily.DATABASE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=psql_bin,
+                execution_args=[],
+                source_filename="solution.sql",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(postgresql_adapter)
+
+        mysql_adapter = RuntimeAdapter(
+            id=LanguageId.MYSQL,
+            display_name="MySQL",
+            official_version="MySQL 9.x / MariaDB 11.x",
+            installed_version=detect_tool_version("/usr/bin/mysql"),
+            family=RuntimeFamily.DATABASE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/mysql",
+                execution_args=[],
+                source_filename="solution.sql",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(mysql_adapter)
+
+        mssql_adapter = RuntimeAdapter(
+            id=LanguageId.MSSQL,
+            display_name="MS SQL Server",
+            official_version="MS SQL Server 2022",
+            installed_version=detect_tool_version("/opt/mssql-tools/bin/sqlcmd"),
+            family=RuntimeFamily.DATABASE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/opt/mssql-tools/bin/sqlcmd",
+                execution_args=[],
+                source_filename="solution.sql",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(mssql_adapter)
+
+        oracle_adapter = RuntimeAdapter(
+            id=LanguageId.ORACLE,
+            display_name="Oracle SQL",
+            official_version="Oracle Database 23c",
+            installed_version=detect_tool_version("/usr/bin/sqlplus"),
+            family=RuntimeFamily.DATABASE,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin="/usr/bin/sqlplus",
+                execution_args=[],
+                source_filename="solution.sql",
+                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(oracle_adapter)

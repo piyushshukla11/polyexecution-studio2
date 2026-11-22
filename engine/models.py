@@ -26,6 +26,7 @@ class LanguageId(str, Enum):
     RACKET = "racket"
     ERLANG = "erlang"
     ELIXIR = "elixir"
+    SQLITE = "sqlite"
     MYSQL = "mysql"
     POSTGRESQL = "postgresql"
     MSSQL = "mssql"
