@@ -14,10 +14,14 @@
  * 3. Browser self-navigation limitation:
  *    Omitting "allow-top-navigation" prevents the sandboxed iframe from redirecting the
  *    top-level host studio window. However, internal self-navigation within the iframe itself
- *    (e.g., window.location.href = 'about:blank' or clicking an anchor tag targeting _self)
- *    cannot be reliably prevented by HTML5 iframe sandbox attributes alone in all browser engines.
- *    Even if an internal redirect is attempted, connect-src 'none' and frame-src 'none'
- *    prevent loading external resources, and the parent-side watchdog terminates execution.
+ *    (e.g., window.location.href = 'https://...' or clicking an anchor tag targeting _self)
+ *    is not blocked by standard connect-src or frame-src CSP directives (which restrict subresource
+ *    fetches and nested child frames, respectively, not document navigation).
+ *    Protection against exfiltration via self-navigation relies on:
+ *    - The iframe possessing an opaque ("null") origin, preventing access to host cookies/storage;
+ *    - The omission of "allow-top-navigation", ensuring the host window cannot be hijacked;
+ *    - The parent-side watchdog timeout, which aggressively terminates and removes stuck or
+ *      navigated iframes when the expected postMessage handshake fails.
  */
 
 import { transform } from 'sucrase';

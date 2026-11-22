@@ -14,6 +14,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 import urllib.parse
@@ -34,6 +35,18 @@ MAX_REQUEST_BYTES: int = 256 * 1024  # 256 KiB ceiling for HTTP request bodies
 MAX_SOURCE_BYTES: int = 65536         # 64 KiB ceiling for source code / stdin
 MAX_REQUEST_ID_LEN: int = 128
 CONNECTION_TIMEOUT_SEC: float = 15.0
+DEFAULT_MAX_CONCURRENCY: int = 64
+
+DEFAULT_ALLOWED_ORIGINS: Set[str] = {
+    "http://127.0.0.1:8088",
+    "http://localhost:8088",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+}
 
 # Resource limits validation bounds
 RUNNER_MIN_TIMEOUT_MS: int = 1
@@ -214,8 +227,20 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
     def gateway(self) -> "ExecutionGateway":
         return self.server.gateway  # type: ignore
 
+    def _get_validated_origin(self) -> Optional[str]:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return None
+        clean_origin = origin.rstrip("/")
+        if clean_origin in self.gateway.allowed_origins or "*" in self.gateway.allowed_origins:
+            return clean_origin
+        return None
+
     def _send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        valid_origin = self._get_validated_origin()
+        if valid_origin:
+            self.send_header("Access-Control-Allow-Origin", valid_origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Request-ID")
         self.send_header("Access-Control-Max-Age", "86400")
@@ -230,11 +255,26 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and not self._get_validated_origin():
+            self._send_json_response(HTTPStatus.FORBIDDEN, {
+                "error": "Forbidden",
+                "message": f"Cross-origin requests from origin '{origin}' are not permitted.",
+            })
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
         self._send_cors_headers()
         self.end_headers()
 
     def do_GET(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and not self._get_validated_origin():
+            self._send_json_response(HTTPStatus.FORBIDDEN, {
+                "error": "Forbidden",
+                "message": f"Cross-origin requests from origin '{origin}' are not permitted.",
+            })
+            return
+
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip("/")
 
@@ -249,6 +289,14 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             })
 
     def do_POST(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and not self._get_validated_origin():
+            self._send_json_response(HTTPStatus.FORBIDDEN, {
+                "error": "Forbidden",
+                "message": f"Cross-origin requests from origin '{origin}' are not permitted.",
+            })
+            return
+
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path.rstrip("/")
 
@@ -399,6 +447,7 @@ class ExecutionGateway:
         timeout: float = 30.0,
         api_key: Optional[str] = None,
         require_auth: bool = False,
+        allowed_origins: Optional[Set[str]] = None,
     ):
         self.daemon_addr = daemon_addr
         self.timeout = timeout
@@ -408,6 +457,15 @@ class ExecutionGateway:
             raise ValueError(
                 "Production security violation: PES2_API_KEY must be configured when authentication is required."
             )
+
+        if allowed_origins is not None:
+            self.allowed_origins = set(allowed_origins)
+        else:
+            env_origins = os.environ.get("PES2_ALLOWED_ORIGINS")
+            if env_origins:
+                self.allowed_origins = {o.strip() for o in env_origins.split(",") if o.strip()}
+            else:
+                self.allowed_origins = set(DEFAULT_ALLOWED_ORIGINS)
 
         self._channel: Optional[grpc.Channel] = None
         self._stub: Optional[execution_pb2_grpc.ExecutionWorkerServiceStub] = None
@@ -637,11 +695,47 @@ class ExecutionGateway:
 
 
 class GatewayServer(ThreadingHTTPServer):
-    """Threading HTTPServer with reference to ExecutionGateway."""
+    """Threading HTTPServer with reference to ExecutionGateway and connection concurrency cap."""
 
-    def __init__(self, server_address: Tuple[str, int], gateway: ExecutionGateway):
+    def __init__(
+        self,
+        server_address: Tuple[str, int],
+        gateway: ExecutionGateway,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+    ):
         self.gateway = gateway
+        self.max_concurrency = max_concurrency
+        self._concurrency_semaphore = threading.BoundedSemaphore(max_concurrency)
         super().__init__(server_address, GatewayRequestHandler)
+
+    def process_request(self, request, client_address):
+        acquired = self._concurrency_semaphore.acquire(blocking=False)
+        if not acquired:
+            try:
+                msg = b'{"error": "Service Unavailable", "message": "Gateway connection limit reached. Please retry later."}\n'
+                hdr = (
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Type: application/json; charset=utf-8\r\n"
+                    b"Content-Length: " + str(len(msg)).encode("ascii") + b"\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+                request.sendall(hdr + msg)
+            except Exception:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                self._concurrency_semaphore.release()
+            except ValueError:
+                pass
 
 
 def create_gateway_server(
@@ -652,6 +746,8 @@ def create_gateway_server(
     api_key: Optional[str] = None,
     require_auth: bool = False,
     gateway: Optional[ExecutionGateway] = None,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+    allowed_origins: Optional[Set[str]] = None,
 ) -> Tuple[GatewayServer, int]:
     if gateway is None:
         gateway = ExecutionGateway(
@@ -659,8 +755,9 @@ def create_gateway_server(
             timeout=timeout,
             api_key=api_key,
             require_auth=require_auth,
+            allowed_origins=allowed_origins,
         )
-    server = GatewayServer((host, port), gateway)
+    server = GatewayServer((host, port), gateway, max_concurrency=max_concurrency)
     bound_port = server.server_port
     return server, bound_port
 
@@ -672,6 +769,8 @@ def run_gateway(
     timeout: float = 30.0,
     api_key: Optional[str] = None,
     require_auth: bool = False,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+    allowed_origins: Optional[Set[str]] = None,
 ) -> None:
     server, bound_port = create_gateway_server(
         host=host,
@@ -680,6 +779,8 @@ def run_gateway(
         timeout=timeout,
         api_key=api_key,
         require_auth=require_auth,
+        max_concurrency=max_concurrency,
+        allowed_origins=allowed_origins,
     )
     logger.info("PES 2 API Gateway listening on http://%s:%d -> daemon at %s", host, bound_port, daemon_addr)
     try:
@@ -723,11 +824,32 @@ def main(args_list: Optional[list] = None) -> int:
         default=False,
         help="Explicitly bypass authentication requirement on non-loopback interfaces (testing only)",
     )
+    parser.add_argument(
+        "--allow-internal-network",
+        action="store_true",
+        default=False,
+        help="Permit binding to private internal container network interfaces (e.g. 0.0.0.0 in Docker Compose)",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=int(os.environ.get("PES2_GATEWAY_MAX_CONCURRENCY", str(DEFAULT_MAX_CONCURRENCY))),
+        help="Ceiling for concurrent client connections before returning HTTP 503",
+    )
+    parser.add_argument(
+        "--allowed-origins",
+        default=os.environ.get("PES2_ALLOWED_ORIGINS"),
+        help="Comma-separated whitelist of allowed CORS origins",
+    )
 
     args = parser.parse_args(args_list)
 
-    # Security check: Non-loopback binding requires authentication unless explicitly bypassed
-    if args.host not in ALLOWED_LOOPBACK_HOSTS and not args.insecure_no_auth:
+    allow_internal = args.allow_internal_network or os.environ.get("PES2_ALLOW_INTERNAL_NETWORKING") == "1"
+    if args.api_key:
+        args.require_auth = True
+
+    # Security check: Non-loopback binding requires authentication unless explicitly bypassed or internal
+    if args.host not in ALLOWED_LOOPBACK_HOSTS and not args.insecure_no_auth and not allow_internal:
         if not args.api_key:
             sys.stderr.write(
                 f"Error: Production security violation: Binding to remote host '{args.host}' "
@@ -735,7 +857,17 @@ def main(args_list: Optional[list] = None) -> int:
                 "CORS is not an authentication boundary.\n"
             )
             return 2
-        args.require_auth = True
+
+    if allow_internal and args.host not in ALLOWED_LOOPBACK_HOSTS:
+        logger.warning(
+            "Internal service networking enabled: gateway binding to '%s'. "
+            "Ensure service is strictly contained on private internal Docker networks and not exposed publicly.",
+            args.host,
+        )
+
+    allowed_origins = None
+    if args.allowed_origins:
+        allowed_origins = {o.strip() for o in args.allowed_origins.split(",") if o.strip()}
 
     logging.basicConfig(
         level=logging.INFO,
@@ -749,6 +881,8 @@ def main(args_list: Optional[list] = None) -> int:
         timeout=args.timeout,
         api_key=args.api_key,
         require_auth=args.require_auth,
+        max_concurrency=args.max_concurrency,
+        allowed_origins=allowed_origins,
     )
     return 0
 

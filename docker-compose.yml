@@ -51,6 +51,8 @@ services:
     restart: unless-stopped
     networks:
       - pes2-internal
+    environment:
+      - VITE_PES2_API_KEY=${PES2_API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/health || exit 1"]
       interval: 10s
@@ -85,6 +87,7 @@ services:
       - PYTHONUNBUFFERED=1
       - PES2_GATEWAY_HOST=0.0.0.0
       - PES2_GATEWAY_PORT=8000
+      - PES2_ALLOW_INTERNAL_NETWORKING=1
       - PES2_DAEMON_ADDR=worker-daemon:50051
       - PES2_TIMEOUT_SEC=${PES2_GATEWAY_TIMEOUT_SEC:-30.0}
       - PES2_API_KEY=${PES2_API_KEY:-}
@@ -119,15 +122,14 @@ services:
       - PES2_HOST=0.0.0.0
       - PES2_PORT=50051
       - PES2_ALLOW_INTERNAL_NETWORKING=1
+      - PES2_CGROUP_ROOT=/sys/fs/cgroup/pes2
       - PES2_WORKERS=${PES2_DAEMON_WORKERS:-8}
       - PES2_CAPACITY=${PES2_DAEMON_CAPACITY:-16}
       - PES2_MEMORY_MB=${PES2_DAEMON_MEMORY_MB:-1024}
     volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    cap_add:
-      - SYS_ADMIN
+      - ${PES2_CGROUP_ROOT:-/sys/fs/cgroup/pes2}:/sys/fs/cgroup/pes2:rw
     security_opt:
-      - seccomp:unconfined
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('127.0.0.1', 50051)); s.close()"]
       interval: 10s

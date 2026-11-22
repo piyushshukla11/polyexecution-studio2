@@ -183,19 +183,22 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
 - Multi-service Docker Compose topology (`docker-compose.yml`):
   - `reverse-proxy`: Nginx 1.27 reverse proxy exposing only loopback ingress (`${PES2_BIND_HOST:-127.0.0.1}:${PES2_PORT:-8088}:80`) by default to prevent exposing execution on public interfaces. Hardened with `read_only: true`, `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
   - `client`: internal static asset web server serving production-built React 18 assets, kept off public host interfaces.
-  - `api-gateway`: Python HTTP gateway (`engine.gateway.server`) translating HTTP REST and SSE requests to internal gRPC calls against the worker daemon. Enforces 256 KiB maximum request body limits (HTTP 413), 15s socket connection timeouts, JSON schema and resource limits bounds validation (HTTP 400), and optional Bearer/X-API-Key token authentication (`PES2_API_KEY`).
-  - `worker-daemon`: Python gRPC worker daemon (`engine.daemon.server`) configured with internal service networking (`PES2_ALLOW_INTERNAL_NETWORKING=1`), admission control, memory budgeting, and fail-closed cgroup isolation. In Compose, configured with `cap_add: [SYS_ADMIN]`, `security_opt: [seccomp:unconfined]`, and cgroupfs mount for nested sandbox creation.
+  - `api-gateway`: Python HTTP gateway (`engine.gateway.server`) translating HTTP REST and SSE requests to internal gRPC calls against the worker daemon. Enforces 256 KiB maximum request body limits (HTTP 413), connection timeouts, bounded connection concurrency cap (`DEFAULT_MAX_CONCURRENCY = 64`, returning HTTP 503 on saturation), JSON schema and resource limits bounds validation (HTTP 400), strict CORS origin whitelisting (rejecting unauthorized cross-origin requests with HTTP 403), internal service networking (`PES2_ALLOW_INTERNAL_NETWORKING=1`), and token authentication (`PES2_API_KEY`).
+  - `worker-daemon`: Python gRPC worker daemon (`engine.daemon.server`) configured with internal service networking (`PES2_ALLOW_INTERNAL_NETWORKING=1`), admission control, memory budgeting, and fail-closed cgroup isolation. Hardened in Compose by removing `SYS_ADMIN` and `seccomp:unconfined`, enabling `no-new-privileges:true`, and mounting only a narrowly delegated cgroup subtree (`${PES2_CGROUP_ROOT:-/sys/fs/cgroup/pes2}:/sys/fs/cgroup/pes2:rw`). Toolchain updated to .NET 10 SDK aligning with host runtime registry.
+  - `reverse-proxy`: Nginx 1.27 reverse proxy exposing only loopback ingress (`${PES2_BIND_HOST:-127.0.0.1}:${PES2_PORT:-8088}:80`) by default to prevent exposing execution on public interfaces. Hardened with `read_only: true`, `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, `security_opt: [no-new-privileges:true]`, forwarding `Authorization` and `X-API-Key` headers to the API gateway, and tmpfs mounts.
   - Database sandboxes: SQLite is supported via in-memory isolation. Persistent database containers (`db-postgres`) have been removed from the default production Compose stack until wired to disposable sandbox paths.
   - Security boundaries: zero public host port exposure for worker services, zero Docker socket exposure, zero committed secrets (`.env.example` template with gitignored `.env`), and private internal bridge networking (`pes2-internal`).
 - Browser Execution Hardening & Real JSX Support:
   - Local JSX transpilation via Sucrase compiler and bundled React 18 / ReactDOM UMD scripts embedded directly in isolated iframe srcDoc without external CDNs.
-  - Parent-side execution watchdog timer: enforces a 5000ms timeout terminating hung or looping iframes.
+  - Parent-side execution watchdog timer: enforces a timeout terminating hung or looping iframes.
   - PostMessage origin and schema validation: validates message sender against the preview iframe's `contentWindow` and verifies message types and payload schemas.
-  - Truthful browser boundary documentation: documents that while host DOM, cookies, and storage are completely protected and outbound network fetches are denied by CSP (`connect-src 'none'`), internal iframe self-navigation cannot be completely blocked in all browsers by sandbox attributes alone.
+  - Truthful browser boundary documentation: documents that while host DOM, cookies, and storage are completely protected by opaque null origin and outbound network fetches are denied by CSP (`connect-src 'none'`), internal iframe self-navigation is not blocked by standard subresource CSP directives and is mitigated by the parent watchdog and null origin.
+  - Real browser engine verification: `tests/test_browser_real_engine.py` runs tests in headless Chromium verifying real JSX DOM rendering, CSP network fetch blocking, postMessage protocol, and parent watchdog termination.
 - Truthful Runtime Status & Telemetry:
   - Dynamic runtime inventory: `LanguagePicker` is dynamically populated from the worker daemon's `/api/runtimes` inventory.
   - Real-time SSE milestone streaming: UI connects to `/api/execute/stream` via `ReadableStream` reader, dispatching milestones in real time as code runs.
   - Separation of browser-only runtimes: `react` and `vanilla_js` are truthfully marked as browser-only runtimes (`is_installed: False` on server worker daemon), executed directly via the client-side browser preview path, and rejected with HTTP 400 if sent to the server runner.
+  - Web Studio Client Authentication: added `AuthModal` in Web Studio header and API key storage (`localStorage` with memory fallback), automatically passing `Authorization: Bearer <key>` and `X-API-Key` headers.
 - Automated end-to-end runtime verification (`tests/test_e2e_runtimes.py`):
   - Verified 12 supported runtimes end-to-end: C++, C, Java, Python 3, JavaScript, Ruby, Bash, C#, SQLite, Pandas, React, and Vanilla JS.
   - Verified 12 uninstalled or unavailable runtimes fail closed honestly with truthful error reporting: Python 2, Swift, Go, Rust, Kotlin, Scala, Dart, MySQL, MS SQL Server, Oracle SQL, PostgreSQL, and Pandas (when host python pandas is in user path).
@@ -205,11 +208,12 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
   - Deterministic cleanup verifying complete removal of ephemeral workspace directories (`/tmp/pes2-*`) across success, failure, timeout, and cancellation.
   - Graceful cancellation handling under concurrent execution.
 - Hardening & Compose integration test suites:
-  - `tests/test_ingress_hardening.py`: 12 tests verifying request size limits (413), schema validation (400), custom limits bounds (400), browser-only rejection (400), and token authentication (401).
-  - `tests/test_compose_integration.py`: 6 tests verifying Compose topology, loopback binding, worker capabilities, and real kernel namespace execution checks.
+  - `tests/test_ingress_hardening.py`: 16 tests verifying request size limits (413), schema validation (400), custom limits bounds (400), browser-only rejection (400), token authentication (401), cross-origin rejection (403), CORS reflection on allowed origins, concurrency cap (503), and internal networking flags.
+  - `tests/test_compose_integration.py`: 6 tests verifying Compose topology, loopback binding, worker capabilities (no-new-privileges, delegated cgroups, removal of SYS_ADMIN/unconfined seccomp), and real kernel namespace execution checks.
+  - `tests/test_browser_real_engine.py`: 3 tests in real headless Chromium verifying real JSX DOM rendering, CSP connect-src blocking, and watchdog termination.
   - `client/tests/BrowserSandboxHardening.test.tsx`: 6 tests verifying Sucrase JSX compilation, error handling, watchdog timeout, and postMessage validation.
-  - `client/tests/ApiStreaming.test.ts`: 3 tests verifying real-time SSE milestone streaming, dynamic inventory population, and offline fallbacks.
-  - Total test coverage: 194 passing Python tests (34 skips), 24 passing Vitest tests, and 220 passing C seccomp profile unit verification tests.
+  - `client/tests/ApiStreaming.test.ts`: 4 tests verifying real-time SSE milestone streaming, dynamic inventory population, auth header attachment, and offline fallbacks.
+  - Total test coverage: 198 passing Python tests (34 skips), 3 passing Playwright Chromium tests, 25 passing Vitest tests, and 220 passing C seccomp profile unit verification tests.
 
 ---
 

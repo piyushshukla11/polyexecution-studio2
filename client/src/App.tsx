@@ -8,9 +8,10 @@ import { EditorWorkspace } from './components/EditorWorkspace';
 import { TelemetryPanel } from './components/TelemetryPanel';
 import { OutputTerminal } from './components/OutputTerminal';
 import { CollaborationBanner } from './components/CollaborationBanner';
+import { AuthModal } from './components/AuthModal';
 import { useExecution } from './hooks/useExecution';
 import { useCollaboration } from './hooks/useCollaboration';
-import { apiClient } from './services/api';
+import { apiClient, getStoredApiKey } from './services/api';
 
 export const App: React.FC = () => {
   const [languages, setLanguages] = useState<LanguageDefinition[]>(LANGUAGES);
@@ -22,6 +23,8 @@ export const App: React.FC = () => {
   );
   const [daemonServing, setDaemonServing] = useState<boolean>(false);
   const [collabModalOpen, setCollabModalOpen] = useState<boolean>(false);
+  const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(() => Boolean(getStoredApiKey()));
   const [browserRunNonce, setBrowserRunNonce] = useState<number>(0);
 
   const {
@@ -95,6 +98,8 @@ export const App: React.FC = () => {
         collabState={collabState}
         onToggleCollabModal={() => setCollabModalOpen(true)}
         daemonServing={daemonServing}
+        hasApiKey={hasApiKey}
+        onToggleAuthModal={() => setAuthModalOpen(true)}
       />
 
       <div className="studio-main-layout">
@@ -144,6 +149,12 @@ export const App: React.FC = () => {
         state={collabState}
         isOpen={collabModalOpen}
         onClose={() => setCollabModalOpen(false)}
+      />
+
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onKeyChange={(has) => setHasApiKey(has)}
       />
     </div>
   );

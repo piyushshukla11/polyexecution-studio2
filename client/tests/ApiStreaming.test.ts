@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ExecutionApiClient } from '../src/services/api';
+import { ExecutionApiClient, getStoredApiKey, setStoredApiKey } from '../src/services/api';
 import { ExecutionRequest, MilestoneEvent } from '../src/types/execution';
 
 describe('ExecutionApiClient SSE Streaming & Dynamic Runtimes', () => {
@@ -7,7 +7,34 @@ describe('ExecutionApiClient SSE Streaming & Dynamic Runtimes', () => {
 
   beforeEach(() => {
     client = new ExecutionApiClient();
+    setStoredApiKey('');
     vi.restoreAllMocks();
+  });
+
+  it('attaches Authorization and X-API-Key headers when API key is configured', async () => {
+    setStoredApiKey('token_xyz_12345');
+    expect(getStoredApiKey()).toBe('token_xyz_12345');
+
+    let capturedHeaders: Record<string, string> = {};
+    const mockFetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      capturedHeaders = (init?.headers || {}) as Record<string, string>;
+      return {
+        ok: true,
+        json: async () => ({ status: 'SERVING', runner_version: '2.0', active_workers: 1 }),
+      };
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await client.checkHealth();
+    expect(capturedHeaders['Authorization']).toBe('Bearer token_xyz_12345');
+    expect(capturedHeaders['X-API-Key']).toBe('token_xyz_12345');
+
+    // Clear key
+    setStoredApiKey('');
+    expect(getStoredApiKey()).toBe('');
+    await client.checkHealth();
+    expect(capturedHeaders['Authorization']).toBeUndefined();
+    expect(capturedHeaders['X-API-Key']).toBeUndefined();
   });
 
   it('streams milestones in real time from SSE endpoint and parses final result', async () => {

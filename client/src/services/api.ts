@@ -3,6 +3,43 @@ import { LanguageDefinition } from '../types/language';
 import { LANGUAGES } from '../constants/languages';
 
 const API_BASE = '/api';
+const STORAGE_KEY_AUTH = 'pes2_api_key';
+let memoryApiKey = '';
+
+export function getStoredApiKey(): string {
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
+      const stored = localStorage.getItem(STORAGE_KEY_AUTH);
+      if (stored) return stored.trim();
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+  if (memoryApiKey) {
+    return memoryApiKey;
+  }
+  const envKey = (import.meta as any).env?.VITE_PES2_API_KEY;
+  if (typeof envKey === 'string' && envKey.trim()) {
+    return envKey.trim();
+  }
+  return '';
+}
+
+export function setStoredApiKey(key: string): void {
+  const trimmed = key ? key.trim() : '';
+  memoryApiKey = trimmed;
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+      if (!trimmed) {
+        localStorage.removeItem(STORAGE_KEY_AUTH);
+      } else {
+        localStorage.setItem(STORAGE_KEY_AUTH, trimmed);
+      }
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
 
 export interface HealthCheckResult {
   isServing: boolean;
@@ -17,9 +54,21 @@ interface BackendRuntimeItem {
 }
 
 export class ExecutionApiClient {
+  getAuthHeaders(): Record<string, string> {
+    const key = getStoredApiKey();
+    if (!key) return {};
+    return {
+      'Authorization': `Bearer ${key}`,
+      'X-API-Key': key,
+    };
+  }
+
   async checkHealth(): Promise<HealthCheckResult> {
     try {
-      const resp = await fetch(`${API_BASE}/health`, { method: 'GET' });
+      const resp = await fetch(`${API_BASE}/health`, {
+        method: 'GET',
+        headers: this.getAuthHeaders(),
+      });
       if (resp.ok) {
         const data = await resp.json();
         return {
@@ -40,7 +89,10 @@ export class ExecutionApiClient {
 
   async getSupportedRuntimes(): Promise<LanguageDefinition[]> {
     try {
-      const resp = await fetch(`${API_BASE}/runtimes`, { method: 'GET' });
+      const resp = await fetch(`${API_BASE}/runtimes`, {
+        method: 'GET',
+        headers: this.getAuthHeaders(),
+      });
       if (resp.ok) {
         const data = await resp.json();
         if (Array.isArray(data.runtimes) && data.runtimes.length > 0) {
@@ -90,7 +142,10 @@ export class ExecutionApiClient {
     try {
       const resp = await fetch(`${API_BASE}/execute/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.getAuthHeaders(),
+        },
         body: JSON.stringify(request),
       });
 
@@ -153,7 +208,10 @@ export class ExecutionApiClient {
     try {
       const resp = await fetch(`${API_BASE}/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.getAuthHeaders(),
+        },
         body: JSON.stringify(request),
       });
 

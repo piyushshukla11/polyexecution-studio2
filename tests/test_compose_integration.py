@@ -31,11 +31,12 @@ class TestDockerComposeConfiguration(unittest.TestCase):
         self.assertIn("${PES2_BIND_HOST:-127.0.0.1}", self.compose_content)
 
     def test_worker_daemon_sandbox_capabilities_configured(self) -> None:
-        """Worker daemon must declare SYS_ADMIN capability and cgroups for namespace sandbox."""
-        self.assertIn("cap_add:", self.compose_content)
-        self.assertIn("SYS_ADMIN", self.compose_content)
-        self.assertIn("seccomp:unconfined", self.compose_content)
-        self.assertIn("/sys/fs/cgroup:/sys/fs/cgroup:rw", self.compose_content)
+        """Worker daemon must use a narrowly delegated cgroup subtree, no-new-privileges, and avoid broad SYS_ADMIN."""
+        self.assertNotIn("SYS_ADMIN", self.compose_content)
+        self.assertNotIn("seccomp:unconfined", self.compose_content)
+        self.assertIn("${PES2_CGROUP_ROOT:-/sys/fs/cgroup/pes2}:/sys/fs/cgroup/pes2:rw", self.compose_content)
+        self.assertIn("PES2_CGROUP_ROOT=/sys/fs/cgroup/pes2", self.compose_content)
+        self.assertIn("no-new-privileges:true", self.compose_content)
 
     def test_postgres_removed_from_production_stack(self) -> None:
         """PostgreSQL service and persistent volume must not be present until disposable sandbox is wired."""

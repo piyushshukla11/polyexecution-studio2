@@ -9,6 +9,8 @@ interface HeaderProps {
   collabState: CollaborationState;
   onToggleCollabModal: () => void;
   daemonServing: boolean;
+  hasApiKey: boolean;
+  onToggleAuthModal: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,6 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   collabState,
   onToggleCollabModal,
   daemonServing,
+  hasApiKey,
+  onToggleAuthModal,
 }) => {
   const isRunnable = selectedLanguage.status === 'supported';
 
@@ -41,6 +45,18 @@ export const Header: React.FC<HeaderProps> = ({
             {daemonServing ? 'Daemon Active' : 'Daemon Standby'}
           </span>
         </div>
+
+        <button
+          type="button"
+          className="collab-badge-button"
+          onClick={onToggleAuthModal}
+          title={hasApiKey ? 'Gateway API Key Configured' : 'Configure Gateway API Key'}
+        >
+          <span className="collab-badge-label">Auth:</span>
+          <span className="collab-badge-val" style={{ color: hasApiKey ? '#10b981' : '#94a3b8' }}>
+            {hasApiKey ? 'API Key Set' : 'No Key'}
+          </span>
+        </button>
 
         <button
           type="button"

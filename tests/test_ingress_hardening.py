@@ -21,6 +21,7 @@ from engine.gateway.server import (
     MAX_REQUEST_BYTES,
     check_authentication,
     create_gateway_server,
+    main as gateway_main,
     validate_execution_payload,
 )
 
@@ -151,6 +152,7 @@ class TestIngressHttpEndToEnd(unittest.TestCase):
         cls.mock_gateway.get_runtimes.return_value = []
         cls.api_key = "test_ingress_secret_key_abcdef"
         cls.mock_gateway.api_key = cls.api_key
+        cls.mock_gateway.allowed_origins = {"http://127.0.0.1:8088", "http://localhost:8088"}
         cls.server, cls.port = create_gateway_server(
             host="127.0.0.1",
             port=0,
@@ -216,6 +218,98 @@ class TestIngressHttpEndToEnd(unittest.TestCase):
             self.assertEqual(err.code, HTTPStatus.BAD_REQUEST)
             resp_body = json.loads(err.read().decode("utf-8"))
             self.assertIn("browser-only runtime", resp_body.get("message", ""))
+
+    def test_untrusted_origin_rejected_403(self) -> None:
+        url = f"http://127.0.0.1:{self.port}/api/health"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Origin": "http://evil-attacker.example.com",
+            },
+            method="GET",
+        )
+        try:
+            urllib.request.urlopen(req)
+            self.fail("Expected HTTP 403 Forbidden on untrusted Origin")
+        except urllib.error.HTTPError as err:
+            self.assertEqual(err.code, HTTPStatus.FORBIDDEN)
+            resp_body = json.loads(err.read().decode("utf-8"))
+            self.assertIn("Cross-origin requests", resp_body.get("message", ""))
+
+    def test_whitelisted_origin_allowed_and_cors_reflected(self) -> None:
+        url = f"http://127.0.0.1:{self.port}/api/health"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Origin": "http://127.0.0.1:8088",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, HTTPStatus.OK)
+            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "http://127.0.0.1:8088")
+            self.assertEqual(resp.headers.get("Vary"), "Origin")
+
+    def test_concurrency_cap_returns_503(self) -> None:
+        import socket
+        import threading
+        import time
+
+        mock_gw = MagicMock()
+        mock_gw.allowed_origins = {"*"}
+        block_event = threading.Event()
+
+        def slow_health():
+            block_event.wait(timeout=2.0)
+            return {"status": "SERVING"}
+
+        mock_gw.check_daemon_health.side_effect = slow_health
+
+        server, port = create_gateway_server(
+            host="127.0.0.1",
+            port=0,
+            gateway=mock_gw,
+            max_concurrency=1,
+        )
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            # Connect client 1 and issue request, which enters slow_health and blocks
+            s1 = socket.socket()
+            s1.connect(("127.0.0.1", port))
+            s1.sendall(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            time.sleep(0.05)
+
+            # Socket 2 should immediately receive HTTP 503 because capacity is 1
+            s2 = socket.socket()
+            s2.connect(("127.0.0.1", port))
+            s2.sendall(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            response = s2.recv(1024).decode("utf-8")
+            s2.close()
+
+            # Release client 1
+            block_event.set()
+            s1.recv(1024)
+            s1.close()
+
+            self.assertIn("503 Service Unavailable", response)
+            self.assertIn("Gateway connection limit reached", response)
+        finally:
+            block_event.set()
+            server.shutdown()
+            server.server_close()
+
+    def test_main_allow_internal_network_flag(self) -> None:
+        from unittest.mock import patch
+        with patch("engine.gateway.server.run_gateway") as mock_run:
+            ret = gateway_main([
+                "--host", "0.0.0.0",
+                "--allow-internal-network",
+            ])
+            self.assertEqual(ret, 0)
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args.kwargs["host"], "0.0.0.0")
 
 
 if __name__ == "__main__":
