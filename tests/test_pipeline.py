@@ -17,7 +17,7 @@ from engine.models import (
 )
 from engine.pipeline import ExecutionPipeline
 from engine.registry import RuntimeRegistry
-from engine.runner import MockSandboxRunner
+from engine.runner import MockSandboxRunner, NativeSandboxRunner
 
 
 class ArtifactCreatingMockRunner(MockSandboxRunner):
@@ -40,6 +40,10 @@ class ArtifactCreatingMockRunner(MockSandboxRunner):
                 out_path = os.path.join(workspace, "Solution.js")
                 with open(out_path, "w") as f:
                     f.write('"use strict";\n')
+            elif any("csc" in str(arg) for arg in target_argv) or target_bin.endswith("dotnet"):
+                out_path = os.path.join(workspace, "Solution.dll")
+                with open(out_path, "wb") as f:
+                    f.write(b"MZ\x90\x00")
         return res
 
 
@@ -840,7 +844,6 @@ class TestExecutionPipeline(unittest.TestCase):
         dart_adapter = self.registry.get(LanguageId.DART)
         if not dart_adapter or not dart_adapter.is_installed:
             self.skipTest("Dart toolchain not installed on host or /opt/dart-sdk inaccessible")
-
         self.runner.queue_result(
             RunnerResult("OK", 0, 0, 500, 480, 122880, "hello dart\n", "")
         )
@@ -872,7 +875,6 @@ class TestExecutionPipeline(unittest.TestCase):
         dart_adapter = self.registry.get(LanguageId.DART)
         if not dart_adapter or not dart_adapter.is_installed:
             self.skipTest("Dart toolchain not installed on host or /opt/dart-sdk inaccessible")
-
         self.runner.queue_result(
             RunnerResult("RUNTIME_ERROR", 254, 0, 400, 390, 118784, "", "Error: Can't find ')' to match '('\n")
         )
@@ -997,6 +999,57 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
+    def test_elixir_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 500, 480, 65536, "hello elixir\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-elixir-ok",
+            language_id=LanguageId.ELIXIR,
+            source_code='IO.puts("hello elixir")\n',
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello elixir\n")
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/elixir")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.ELIXIR)
+
+    def test_elixir_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 500, 480, 65536, "", "** (ArithmeticError) bad argument in arithmetic expression\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-elixir-err",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def start do\n    1 / 0\n  end\nend\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("ArithmeticError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
     def test_typescript_success_milestones(self) -> None:
         # Mock compilation and execution success
         self.runner.queue_result(
@@ -1091,26 +1144,131 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertEqual(len(self.runner.invocations), 2)
 
-    def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
-        unsupported = [
-            lang for lang in (
-                LanguageId.PYTHON2,
-                LanguageId.SWIFT,
-                LanguageId.ELIXIR,
-                LanguageId.CSHARP,
-            )
-            if self.registry.get(lang) and not self.registry.get(lang).is_installed
+    def test_csharp_success_milestones(self) -> None:
+        # Mock compilation and execution success
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 105000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 100, 80, 35000, "hello csharp pipeline\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-ok",
+            language_id=LanguageId.CSHARP,
+            source_code='using System; class Solution { static void Main() { Console.WriteLine("hello csharp pipeline"); } }\n',
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello csharp pipeline\n")
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
         ]
-        for lang_id in unsupported:
-            req = ExecutionRequest(
-                request_id=f"req-unsupported-{lang_id.value}",
-                language_id=lang_id,
-                source_code="print('hello')\n",
-            )
-            res = self.pipeline.execute(req)
-            self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
-            self.assertIn("is not installed on this host", res.stderr)
-            self.assertEqual(len(self.runner.invocations), 0)
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+
+        # Stage 1: Compilation invocation
+        compile_inv = self.runner.invocations[0]
+        self.assertTrue(compile_inv["target_bin"].endswith("dotnet"))
+        self.assertIn("-out:/workspace/Solution.dll", compile_inv["target_argv"])
+        self.assertIn("/workspace/Solution.cs", compile_inv["target_argv"])
+        self.assertEqual(compile_inv["seccomp_profile"], SeccompPolicyProfile.CSHARP)
+        self.assertEqual(compile_inv["limits"].memory_kb, 262144)
+        self.assertEqual(compile_inv["limits"].pids, 64)
+
+        # Stage 2: Execution invocation
+        exec_inv = self.runner.invocations[1]
+        self.assertTrue(exec_inv["target_bin"].endswith("dotnet"))
+        self.assertIn("--runtimeconfig", exec_inv["target_argv"])
+        self.assertIn("/workspace/Solution.dll", exec_inv["target_argv"])
+        self.assertEqual(exec_inv["seccomp_profile"], SeccompPolicyProfile.CSHARP)
+        self.assertEqual(exec_inv["limits"].memory_kb, 131072)
+        self.assertEqual(exec_inv["limits"].pids, 32)
+
+    def test_csharp_compile_error_truthful_and_fail_closed(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 1500, 1400, 105000, "", "Solution.cs(1,1): error CS1002: ; expected\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-compile-err",
+            language_id=LanguageId.CSHARP,
+            source_code="class Solution { broken syntax }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("error CS1002", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+
+    def test_csharp_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 105000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 100, 80, 35000, "", "Unhandled exception. System.DivideByZeroException: Attempted to divide by zero.\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-runtime-err",
+            language_id=LanguageId.CSHARP,
+            source_code="using System; class Solution { static void Main() { int a = 1, b = 0; int c = a / b; } }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("DivideByZeroException", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+
+    def test_csharp_execution_memory_limit_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 105000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("MEMORY_LIMIT", 137, 9, 200, 150, 131072, "", "Process killed by cgroup OOM killer\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-oom",
+            language_id=LanguageId.CSHARP,
+            source_code="using System; class Solution { static void Main() {} }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(res.signal, 9)
+        self.assertGreaterEqual(res.peak_memory_kb, 131072)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.MEMORY_LIMIT,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+        self.assertEqual(self.runner.invocations[1]["limits"].memory_kb, 131072)
+
 
     def test_unsupported_phase6_databases_fail_closed(self) -> None:
         unsupported = [
@@ -1124,6 +1282,342 @@ class TestExecutionPipeline(unittest.TestCase):
                 request_id=f"req-unsupported-db-{lang_id.value}",
                 language_id=lang_id,
                 source_code="SELECT 1;\n",
+            )
+            res = self.pipeline.execute(req)
+            self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+            self.assertIn("is not installed on this host", res.stderr)
+            self.assertEqual(len(self.runner.invocations), 0)
+
+
+    def test_sqlite_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 50, 30, 20000, '{"columns": ["id", "val"], "rows": [[1, "test"]]}\n', "")
+        )
+        request = ExecutionRequest(
+            request_id="req-sqlite-ok",
+            language_id=LanguageId.SQLITE,
+            source_code="CREATE TABLE t (id INT, val TEXT); INSERT INTO t VALUES (1, 'test'); SELECT * FROM t;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertIn("columns", res.stdout)
+        self.assertIn("rows", res.stdout)
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["target_bin"], "/usr/bin/python3")
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.PYTHON)
+        self.assertEqual(inv["limits"].wall_ms, 3000)
+        self.assertEqual(inv["limits"].memory_kb, 65536)
+
+
+    def test_sqlite_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 50, 30, 20000, "", "SQLite error: near \"FRO\": syntax error\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-sqlite-err",
+            language_id=LanguageId.SQLITE,
+            source_code="SELECT * FRO t;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("syntax error", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+
+
+    def test_sqlite_timeout_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("TIMEOUT", 124, 9, 3000, 2000, 30000, "", "Execution timed out\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-sqlite-timeout",
+            language_id=LanguageId.SQLITE,
+            source_code="WITH RECURSIVE cte(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cte) SELECT * FROM cte;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.TIMEOUT)
+        self.assertEqual(res.exit_code, 124)
+        self.assertEqual(res.signal, 9)
+
+
+    def test_sqlite_memory_limit_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("MEMORY_LIMIT", 137, 9, 100, 80, 65536, "", "Process killed by cgroup OOM killer\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-sqlite-oom",
+            language_id=LanguageId.SQLITE,
+            source_code="SELECT 1;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(res.exit_code, 137)
+        self.assertEqual(res.signal, 9)
+
+
+    def test_sqlite_harness_preserves_semicolons_in_strings_and_triggers(self) -> None:
+        import subprocess, tempfile, json
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        sql = (
+            "CREATE TABLE Items (id INT, description TEXT);\n"
+            "CREATE TABLE Audit (item_id INT, log_msg TEXT);\n"
+            "CREATE TRIGGER tr_items AFTER INSERT ON Items\n"
+            "BEGIN\n"
+            "    UPDATE Items SET description = 'modified; ' || new.description WHERE id = new.id;\n"
+            "    INSERT INTO Audit VALUES (new.id, 'item;inserted;audit');\n"
+            "END;\n"
+            "INSERT INTO Items VALUES (1, 'initial; description; with; semicolons');\n"
+            "SELECT id, description FROM Items;\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sql_path = os.path.join(tmpdir, "solution.sql")
+            with open(sql_path, "w", encoding="utf-8") as f:
+                f.write(sql)
+            res = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sql_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, f"Harness failed: {res.stderr}")
+            parsed = json.loads(res.stdout)
+            self.assertEqual(
+                parsed,
+                {
+                    "columns": ["id", "description"],
+                    "rows": [[1, "modified; initial; description; with; semicolons"]],
+                },
+            )
+
+
+    def test_sqlite_harness_rejects_attach_and_detach(self) -> None:
+        import subprocess, tempfile
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "evil1.db")
+            file2 = os.path.join(tmpdir, "evil2.db")
+            file3 = os.path.join(tmpdir, "evil3.db")
+            file4 = os.path.join(tmpdir, "evil4.db")
+
+            statements = [
+                f"ATTACH '{file1}' AS evil1;\n",
+                f"ATTACH\n  '{file2}'\n  AS evil2;\n",
+                f"ATTACH/*comment*/'{file3}'/*comment*/AS evil3;\n",
+                f"ATTACH -- comment\n '{file4}' AS evil4;\n",
+                "DETACH evil;\n",
+                "DETACH\n  evil;\n",
+                "DETACH/*comment*/evil;\n",
+                "DETACH -- comment\n evil;\n",
+            ]
+            for stmt in statements:
+                sql_path = os.path.join(tmpdir, "test.sql")
+                with open(sql_path, "w", encoding="utf-8") as f:
+                    f.write(stmt)
+                res = subprocess.run(
+                    [sys.executable, "-I", "-c", harness_script, sql_path],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(res.returncode, 1, f"Expected denial for {stmt!r}, got: {res.stdout}")
+                self.assertIn("not authorized", res.stderr)
+
+            for fpath in (file1, file2, file3, file4):
+                self.assertFalse(os.path.exists(fpath), f"File {fpath} must not be created")
+
+
+    def test_sqlite_harness_rejects_vacuum_into_variations(self) -> None:
+        import subprocess, tempfile
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f1 = os.path.join(tmpdir, "v1.db")
+            f2 = os.path.join(tmpdir, "v2.db")
+            f3 = os.path.join(tmpdir, "v3.db")
+            f4 = os.path.join(tmpdir, "v4.db")
+            f5 = os.path.join(tmpdir, "v5.db")
+
+            variations = [
+                f"CREATE TABLE t (id INT);\nVACUUM INTO '{f1}';\n",
+                f"CREATE TABLE t (id INT);\nVACUUM\n  INTO\n  '{f2}';\n",
+                f"CREATE TABLE t (id INT);\nVACUUM\n  main\n  INTO\n  '{f3}';\n",
+                f"CREATE TABLE t (id INT);\nVACUUM/*comment*/INTO '{f4}';\n",
+                f"CREATE TABLE t (id INT);\nVACUUM -- comment\n INTO '{f5}';\n",
+            ]
+            for var in variations:
+                sql_path = os.path.join(tmpdir, "test.sql")
+                with open(sql_path, "w", encoding="utf-8") as f:
+                    f.write(var)
+                res = subprocess.run(
+                    [sys.executable, "-I", "-c", harness_script, sql_path],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(res.returncode, 1, f"Expected denial for {var!r}, got: {res.stdout}")
+                self.assertIn("authorization denied: VACUUM INTO is disabled", res.stderr)
+
+            for fpath in (f1, f2, f3, f4, f5):
+                self.assertFalse(os.path.exists(fpath), f"VACUUM INTO created unexpected file: {fpath}")
+
+
+    def test_sqlite_harness_rejects_file_affecting_pragmas(self) -> None:
+        import subprocess, tempfile
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dir1 = os.path.join(tmpdir, "temp1")
+            dir2 = os.path.join(tmpdir, "temp2")
+            dir3 = os.path.join(tmpdir, "temp3")
+
+            pragma_statements = [
+                f"PRAGMA temp_store_directory = '{dir1}';\n",
+                f"PRAGMA\n  temp_store_directory\n  = '{dir2}';\n",
+                f"PRAGMA/*comment*/temp_store_directory = '{dir3}';\n",
+                f"PRAGMA data_store_directory = '{tmpdir}';\n",
+                "PRAGMA database_list;\n",
+                "PRAGMA\n  database_list;\n",
+                "PRAGMA/*comment*/database_list;\n",
+                "PRAGMA journal_mode = WAL;\n",
+                "PRAGMA\n  journal_mode\n  = WAL;\n",
+                "PRAGMA/*comment*/journal_mode = WAL;\n",
+                "PRAGMA auto_vacuum = FULL;\n",
+                "PRAGMA mmap_size = 268435456;\n",
+                "PRAGMA temp_store = FILE;\n",
+            ]
+            for stmt in pragma_statements:
+                sql_path = os.path.join(tmpdir, "test.sql")
+                with open(sql_path, "w", encoding="utf-8") as f:
+                    f.write(stmt)
+                res = subprocess.run(
+                    [sys.executable, "-I", "-c", harness_script, sql_path],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(res.returncode, 1, f"Expected denial for PRAGMA {stmt!r}, got: {res.stdout}")
+                self.assertIn("not authorized", res.stderr)
+
+            for d in (dir1, dir2, dir3):
+                self.assertFalse(os.path.exists(d), f"Directory {d} should not be created")
+
+
+    def test_sqlite_harness_allows_normal_sql_and_safe_pragmas(self) -> None:
+        import subprocess, tempfile, json
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        sql = (
+            "CREATE TABLE Items (id INT PRIMARY KEY, name TEXT, qty INT);\n"
+            "INSERT INTO Items VALUES (1, 'apple', 10), (2, 'banana', 20);\n"
+            "UPDATE Items SET qty = 15 WHERE id = 1;\n"
+            "DELETE FROM Items WHERE id = 2;\n"
+            "WITH Stock AS (SELECT sum(qty) AS total_qty FROM Items) SELECT total_qty FROM Stock;\n"
+            "CREATE TRIGGER tr_audit AFTER INSERT ON Items BEGIN UPDATE Items SET name = 'triggered' WHERE id = new.id; END;\n"
+            "INSERT INTO Items VALUES (3, 'cherry', 30);\n"
+            "CREATE VIEW v_items AS SELECT id, name FROM Items WHERE qty >= 15;\n"
+            "SELECT * FROM v_items;\n"
+            "PRAGMA table_info(Items);\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sql_path = os.path.join(tmpdir, "test.sql")
+            with open(sql_path, "w", encoding="utf-8") as f:
+                f.write(sql)
+            res = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sql_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, f"Harness failed on normal SQL: {res.stderr}")
+            parsed = json.loads(res.stdout)
+            self.assertTrue(isinstance(parsed, list) or isinstance(parsed, dict))
+
+
+    def test_sqlite_harness_progress_handler_interrupts_at_one_million_opcodes(self) -> None:
+        import subprocess, tempfile
+        adapter = self.registry.get(LanguageId.SQLITE)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sql_path = os.path.join(tmpdir, "solution.sql")
+            sql = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt) SELECT count(*) FROM cnt;\n"
+            with open(sql_path, "w", encoding="utf-8") as f:
+                f.write(sql)
+            res = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sql_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("interrupted", res.stderr)
+
+
+    def test_sqlite_harness_progress_handler_exact_boundary(self) -> None:
+        """Verifies that progress callback stops at the exact 1,000,000 opcode interval (ticks >= max_ticks)."""
+        max_opcodes = 1000000
+        opcode_interval = 100
+        max_ticks = max_opcodes // opcode_interval
+        self.assertEqual(max_ticks, 10000)
+        ticks = 0
+        def progress_cb():
+            nonlocal ticks
+            ticks += 1
+            return 1 if ticks >= max_ticks else 0
+
+        ticks = 9998
+        self.assertEqual(progress_cb(), 0)
+        self.assertEqual(ticks, 9999)
+        self.assertEqual(progress_cb(), 1)
+        self.assertEqual(ticks, 10000)
+
+
+
+    def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
+        unsupported = [
+            LanguageId.PYTHON2,
+            LanguageId.SWIFT,
+        ]
+        for lang_id in unsupported:
+            req = ExecutionRequest(
+                request_id=f"req-unsupported-{lang_id.value}",
+                language_id=lang_id,
+                source_code="print('hello')\n",
             )
             res = self.pipeline.execute(req)
             self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
@@ -1925,15 +2419,28 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(oom_res.signal, 9)
         self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
 
-        # 5. Network denial (socket blocked by policy)
+        # 5. Network denial (socket() returns EPERM via seccomp filter)
+        evil_src = (
+            "-module(solution).\n"
+            "-export([start/0]).\n"
+            "start() ->\n"
+            "    case gen_tcp:connect(\"127.0.0.1\", 80, []) of\n"
+            "        {error, eperm} ->\n"
+            "            io:format(\"NETWORK_DENIED_EPERM~n\"),\n"
+            "            halt(42);\n"
+            "        _ ->\n"
+            "            halt(1)\n"
+            "    end.\n"
+        )
         evil_req = ExecutionRequest(
             request_id="req-live-erlang-socket-blocked",
             language_id=LanguageId.ERLANG,
-            source_code="-module(solution).\n-export([start/0]).\nstart() -> gen_tcp:connect(\"127.0.0.1\", 80, []).\n",
+            source_code=evil_src,
         )
         evil_res = pipeline.execute(evil_req)
-        self.assertEqual(evil_res.final_status, Milestone.BLOCKED_BY_POLICY)
-        self.assertEqual(evil_res.signal, 31)
+        self.assertEqual(evil_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(evil_res.exit_code, 42)
+        self.assertIn("NETWORK_DENIED_EPERM", evil_res.stdout)
 
         # 6. Verify zero cgroup leftovers
         leftovers = [
@@ -1942,312 +2449,319 @@ class TestExecutionPipeline(unittest.TestCase):
         ]
         self.assertEqual(len(leftovers), 0)
 
-    def test_sqlite_truthful_milestones_no_compiling(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("OK", 0, 0, 50, 30, 20000, '{"columns": ["id", "val"], "rows": [[1, "test"]]}\n', "")
-        )
-        request = ExecutionRequest(
-            request_id="req-sqlite-ok",
-            language_id=LanguageId.SQLITE,
-            source_code="CREATE TABLE t (id INT, val TEXT); INSERT INTO t VALUES (1, 'test'); SELECT * FROM t;\n",
-        )
-        res = self.pipeline.execute(request)
+    def test_live_execution_elixir(self) -> None:
+        try:
+            res = subprocess.run(["unshare", "-Ur", "true"], capture_output=True, timeout=2)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
 
-        self.assertEqual(res.final_status, Milestone.COMPLETED)
-        self.assertEqual(res.exit_code, 0)
-        self.assertIn("columns", res.stdout)
-        self.assertIn("rows", res.stdout)
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
 
-        milestone_names = [m.milestone for m in res.milestones]
-        expected = [
-            Milestone.ACCEPTED,
-            Milestone.RUNNING,
+        elixir_adapter = self.registry.get(LanguageId.ELIXIR)
+        if not elixir_adapter or not elixir_adapter.is_installed:
+            self.skipTest("Elixir not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal execution with Solution.start/0: covers exact /workspace/solution.exs path
+        elixir_src = (
+            "defmodule Solution do\n"
+            "  def start do\n"
+            "    IO.puts(\"ELIXIR_START_SUCCESS\")\n"
+            "  end\n"
+            "end\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-elixir-start",
+            language_id=LanguageId.ELIXIR,
+            source_code=elixir_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(ok_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("ELIXIR_START_SUCCESS", ok_res.stdout)
+
+        # 1b. Normal execution with Solution.main/1
+        elixir_main1_src = (
+            "defmodule Solution do\n"
+            "  def main(_args) do\n"
+            "    IO.puts(\"ELIXIR_MAIN1_SUCCESS\")\n"
+            "  end\n"
+            "end\n"
+        )
+        main1_req = ExecutionRequest(
+            request_id="req-live-elixir-main1",
+            language_id=LanguageId.ELIXIR,
+            source_code=elixir_main1_src,
+        )
+        main1_res = pipeline.execute(main1_req)
+        self.assertEqual(main1_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(main1_res.exit_code, 0)
+        self.assertIn("ELIXIR_MAIN1_SUCCESS", main1_res.stdout)
+
+        # 1c. Normal execution with top-level script statements
+        elixir_top_src = 'IO.puts("ELIXIR_TOP_SUCCESS")\n'
+        top_req = ExecutionRequest(
+            request_id="req-live-elixir-top",
+            language_id=LanguageId.ELIXIR,
+            source_code=elixir_top_src,
+        )
+        top_res = pipeline.execute(top_req)
+        self.assertEqual(top_res.final_status, Milestone.COMPLETED)
+        self.assertEqual(top_res.exit_code, 0)
+        self.assertIn("ELIXIR_TOP_SUCCESS", top_res.stdout)
+
+        # 2. Syntax error
+        syntax_err_req = ExecutionRequest(
+            request_id="req-live-elixir-syntax-err",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def bad( do: :err\nend\n",
+        )
+        syntax_err_res = pipeline.execute(syntax_err_req)
+        self.assertEqual(syntax_err_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(syntax_err_res.exit_code, 1)
+
+        # 2b. Runtime exception (badarith)
+        crash_req = ExecutionRequest(
+            request_id="req-live-elixir-crash",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def start do\n    1 / 0\n  end\nend\n",
+        )
+        crash_res = pipeline.execute(crash_req)
+        self.assertEqual(crash_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(crash_res.exit_code, 1)
+        self.assertIn("ArithmeticError", crash_res.stderr)
+
+        # 3a. Wall timeout
+        wall_to_req = ExecutionRequest(
+            request_id="req-live-elixir-wall-timeout",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def start do\n    Process.sleep(10000)\n  end\nend\n",
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=196608, pids=64, max_output_bytes=65536),
+        )
+        wall_to_res = pipeline.execute(wall_to_req)
+        self.assertEqual(wall_to_res.final_status, Milestone.TIMEOUT)
+
+        # 3b. CPU timeout
+        cpu_to_req = ExecutionRequest(
+            request_id="req-live-elixir-cpu-timeout",
+            language_id=LanguageId.ELIXIR,
+            source_code="defmodule Solution do\n  def loop, do: loop()\n  def start, do: loop()\nend\n",
+            custom_limits=ResourceLimits(wall_ms=5000, cpu_ms=200, memory_kb=196608, pids=64, max_output_bytes=65536),
+        )
+        cpu_to_res = pipeline.execute(cpu_to_req)
+        self.assertEqual(cpu_to_res.final_status, Milestone.TIMEOUT)
+
+        # 4. Memory limit enforcement at adapter default (192 MiB)
+        oom_src = (
+            "defmodule Solution do\n"
+            "  def bomb(acc) do\n"
+            "    bomb([:binary.copy(<<42>>, 20000000) | acc])\n"
+            "  end\n"
+            "  def start, do: bomb([])\n"
+            "end\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-elixir-oom-default-192mb",
+            language_id=LanguageId.ELIXIR,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 196608)
+
+        # 5. Network denial (socket() returns EPERM via seccomp filter)
+        evil_src = (
+            "defmodule Solution do\n"
+            "  def start do\n"
+            "    case :gen_tcp.connect({127, 0, 0, 1}, 80, []) do\n"
+            "      {:error, :eperm} ->\n"
+            "        IO.puts(\"NETWORK_DENIED_EPERM\")\n"
+            "        System.halt(42)\n"
+            "      {:ok, _} ->\n"
+            "        IO.puts(\"CONNECTED_UNEXPECTED\")\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+        )
+        evil_req = ExecutionRequest(
+            request_id="req-live-elixir-connect-blocked",
+            language_id=LanguageId.ELIXIR,
+            source_code=evil_src,
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(evil_res.exit_code, 42)
+        self.assertIn("NETWORK_DENIED_EPERM", evil_res.stdout)
+
+        # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_csharp_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        csharp_adapter = self.registry.get(LanguageId.CSHARP)
+        if not csharp_adapter or not csharp_adapter.is_installed:
+            self.skipTest("C# (.NET) not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal compilation and execution
+        cs_src = (
+            "using System;\n"
+            "class Solution {\n"
+            "    static void Main() {\n"
+            "        Console.WriteLine(\"CSHARP_LIVE_SUCCESS\");\n"
+            "    }\n"
+            "}\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-csharp-ok",
+            language_id=LanguageId.CSHARP,
+            source_code=cs_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(
+            ok_res.final_status,
             Milestone.COMPLETED,
+            "C# compile/execute failed: "
+            f"exit={ok_res.exit_code} signal={ok_res.signal} "
+            f"peak_memory_kb={ok_res.peak_memory_kb} "
+            f"stdout={ok_res.stdout!r} stderr={ok_res.stderr!r} "
+            f"compile_output={ok_res.compile_output!r}",
+        )
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("CSHARP_LIVE_SUCCESS", ok_res.stdout)
+
+        # 2. Compilation error
+        syntax_err_req = ExecutionRequest(
+            request_id="req-live-csharp-syntax-err",
+            language_id=LanguageId.CSHARP,
+            source_code="class Solution { broken syntax here }\n",
+        )
+        syntax_err_res = pipeline.execute(syntax_err_req)
+        self.assertEqual(syntax_err_res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(syntax_err_res.exit_code, 1)
+
+        # 3. Runtime exception
+        crash_req = ExecutionRequest(
+            request_id="req-live-csharp-crash",
+            language_id=LanguageId.CSHARP,
+            source_code=(
+                "using System;\n"
+                "class Solution {\n"
+                "    static void Main() {\n"
+                "        throw new InvalidOperationException(\"CSHARP_CRASH_TEST\");\n"
+                "    }\n"
+                "}\n"
+            ),
+        )
+        crash_res = pipeline.execute(crash_req)
+        self.assertEqual(crash_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertIn(crash_res.signal, (6, 11))
+        self.assertIn("CSHARP_CRASH_TEST", crash_res.stderr)
+
+        # 4. Timeout
+        to_req = ExecutionRequest(
+            request_id="req-live-csharp-timeout",
+            language_id=LanguageId.CSHARP,
+            source_code=(
+                "using System;\n"
+                "using System.Threading;\n"
+                "class Solution {\n"
+                "    static void Main() {\n"
+                "        Thread.Sleep(10000);\n"
+                "    }\n"
+                "}\n"
+            ),
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=131072, pids=32, max_output_bytes=65536),
+        )
+        to_res = pipeline.execute(to_req)
+        self.assertEqual(to_res.final_status, Milestone.TIMEOUT)
+
+        # 5. Memory limit enforcement at adapter default (128 MiB)
+        oom_src = (
+            "using System;\n"
+            "using System.Collections.Generic;\n"
+            "class Solution {\n"
+            "    static void Main() {\n"
+            "        var chunks = new List<byte[]>();\n"
+            "        while (true) {\n"
+            "            var chunk = new byte[10000000];\n"
+            "            for (int i = 0; i < chunk.Length; i += 4096) chunk[i] = 1;\n"
+            "            chunks.Add(chunk);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-csharp-oom-default-128mb",
+            language_id=LanguageId.CSHARP,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 131072)
+
+        # 6. Network denial (socket() returns EPERM)
+        evil_src = (
+            "using System;\n"
+            "using System.Net.Sockets;\n"
+            "class Solution {\n"
+            "    static void Main() {\n"
+            "        try {\n"
+            "            var s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);\n"
+            "            s.Connect(\"127.0.0.1\", 80);\n"
+            "        } catch (Exception ex) {\n"
+            "            Console.WriteLine($\"NETWORK_DENIED_{ex.GetType().Name}\");\n"
+            "            Environment.Exit(42);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        evil_req = ExecutionRequest(
+            request_id="req-live-csharp-network-denied",
+            language_id=LanguageId.CSHARP,
+            source_code=evil_src,
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(evil_res.exit_code, 42)
+        self.assertIn("NETWORK_DENIED", evil_res.stdout)
+
+        # 7. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
         ]
-        self.assertEqual(milestone_names, expected)
-        self.assertNotIn(Milestone.COMPILING, milestone_names)
-        self.assertEqual(len(self.runner.invocations), 1)
-        inv = self.runner.invocations[0]
-        self.assertEqual(inv["target_bin"], "/usr/bin/python3")
-        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.PYTHON)
-        self.assertEqual(inv["limits"].wall_ms, 3000)
-        self.assertEqual(inv["limits"].memory_kb, 65536)
+        self.assertEqual(len(leftovers), 0)
 
-    def test_sqlite_syntax_or_runtime_error_milestone(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("RUNTIME_ERROR", 1, 0, 50, 30, 20000, "", "SQLite error: near \"FRO\": syntax error\n")
-        )
-        request = ExecutionRequest(
-            request_id="req-sqlite-err",
-            language_id=LanguageId.SQLITE,
-            source_code="SELECT * FRO t;\n",
-        )
-        res = self.pipeline.execute(request)
-
-        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
-        self.assertEqual(res.exit_code, 1)
-        self.assertIn("syntax error", res.stderr)
-        milestone_names = [m.milestone for m in res.milestones]
-        expected = [
-            Milestone.ACCEPTED,
-            Milestone.RUNNING,
-            Milestone.RUNTIME_ERROR,
-        ]
-        self.assertEqual(milestone_names, expected)
-        self.assertNotIn(Milestone.COMPILING, milestone_names)
-
-    def test_sqlite_timeout_milestone(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("TIMEOUT", 124, 9, 3000, 2000, 30000, "", "Execution timed out\n")
-        )
-        request = ExecutionRequest(
-            request_id="req-sqlite-timeout",
-            language_id=LanguageId.SQLITE,
-            source_code="WITH RECURSIVE cte(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cte) SELECT * FROM cte;\n",
-        )
-        res = self.pipeline.execute(request)
-
-        self.assertEqual(res.final_status, Milestone.TIMEOUT)
-        self.assertEqual(res.exit_code, 124)
-        self.assertEqual(res.signal, 9)
-
-    def test_sqlite_memory_limit_milestone(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("MEMORY_LIMIT", 137, 9, 100, 80, 65536, "", "Process killed by cgroup OOM killer\n")
-        )
-        request = ExecutionRequest(
-            request_id="req-sqlite-oom",
-            language_id=LanguageId.SQLITE,
-            source_code="SELECT 1;\n",
-        )
-        res = self.pipeline.execute(request)
-
-        self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
-        self.assertEqual(res.exit_code, 137)
-        self.assertEqual(res.signal, 9)
-
-    def test_sqlite_harness_preserves_semicolons_in_strings_and_triggers(self) -> None:
-        import subprocess, tempfile, json
-        adapter = self.registry.get(LanguageId.SQLITE)
-        self.assertIsNotNone(adapter)
-        assert adapter is not None
-        harness_script = adapter.execution_spec.execution_args[2]
-
-        sql = (
-            "CREATE TABLE Items (id INT, description TEXT);\n"
-            "CREATE TABLE Audit (item_id INT, log_msg TEXT);\n"
-            "CREATE TRIGGER tr_items AFTER INSERT ON Items\n"
-            "BEGIN\n"
-            "    UPDATE Items SET description = 'modified; ' || new.description WHERE id = new.id;\n"
-            "    INSERT INTO Audit VALUES (new.id, 'item;inserted;audit');\n"
-            "END;\n"
-            "INSERT INTO Items VALUES (1, 'initial; description; with; semicolons');\n"
-            "SELECT id, description FROM Items;\n"
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sql_path = os.path.join(tmpdir, "solution.sql")
-            with open(sql_path, "w", encoding="utf-8") as f:
-                f.write(sql)
-            res = subprocess.run(
-                [sys.executable, "-I", "-c", harness_script, sql_path],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(res.returncode, 0, f"Harness failed: {res.stderr}")
-            parsed = json.loads(res.stdout)
-            self.assertEqual(
-                parsed,
-                {
-                    "columns": ["id", "description"],
-                    "rows": [[1, "modified; initial; description; with; semicolons"]],
-                },
-            )
-
-    def test_sqlite_harness_rejects_attach_and_detach(self) -> None:
-        import subprocess, tempfile
-        adapter = self.registry.get(LanguageId.SQLITE)
-        self.assertIsNotNone(adapter)
-        assert adapter is not None
-        harness_script = adapter.execution_spec.execution_args[2]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file1 = os.path.join(tmpdir, "evil1.db")
-            file2 = os.path.join(tmpdir, "evil2.db")
-            file3 = os.path.join(tmpdir, "evil3.db")
-            file4 = os.path.join(tmpdir, "evil4.db")
-
-            statements = [
-                f"ATTACH '{file1}' AS evil1;\n",
-                f"ATTACH\n  '{file2}'\n  AS evil2;\n",
-                f"ATTACH/*comment*/'{file3}'/*comment*/AS evil3;\n",
-                f"ATTACH -- comment\n '{file4}' AS evil4;\n",
-                "DETACH evil;\n",
-                "DETACH\n  evil;\n",
-                "DETACH/*comment*/evil;\n",
-                "DETACH -- comment\n evil;\n",
-            ]
-            for stmt in statements:
-                sql_path = os.path.join(tmpdir, "test.sql")
-                with open(sql_path, "w", encoding="utf-8") as f:
-                    f.write(stmt)
-                res = subprocess.run(
-                    [sys.executable, "-I", "-c", harness_script, sql_path],
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(res.returncode, 1, f"Expected denial for {stmt!r}, got: {res.stdout}")
-                self.assertIn("not authorized", res.stderr)
-
-            for fpath in (file1, file2, file3, file4):
-                self.assertFalse(os.path.exists(fpath), f"File {fpath} must not be created")
-
-    def test_sqlite_harness_rejects_vacuum_into_variations(self) -> None:
-        import subprocess, tempfile
-        adapter = self.registry.get(LanguageId.SQLITE)
-        self.assertIsNotNone(adapter)
-        assert adapter is not None
-        harness_script = adapter.execution_spec.execution_args[2]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            f1 = os.path.join(tmpdir, "v1.db")
-            f2 = os.path.join(tmpdir, "v2.db")
-            f3 = os.path.join(tmpdir, "v3.db")
-            f4 = os.path.join(tmpdir, "v4.db")
-            f5 = os.path.join(tmpdir, "v5.db")
-
-            variations = [
-                f"CREATE TABLE t (id INT);\nVACUUM INTO '{f1}';\n",
-                f"CREATE TABLE t (id INT);\nVACUUM\n  INTO\n  '{f2}';\n",
-                f"CREATE TABLE t (id INT);\nVACUUM\n  main\n  INTO\n  '{f3}';\n",
-                f"CREATE TABLE t (id INT);\nVACUUM/*comment*/INTO '{f4}';\n",
-                f"CREATE TABLE t (id INT);\nVACUUM -- comment\n INTO '{f5}';\n",
-            ]
-            for var in variations:
-                sql_path = os.path.join(tmpdir, "test.sql")
-                with open(sql_path, "w", encoding="utf-8") as f:
-                    f.write(var)
-                res = subprocess.run(
-                    [sys.executable, "-I", "-c", harness_script, sql_path],
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(res.returncode, 1, f"Expected denial for {var!r}, got: {res.stdout}")
-                self.assertIn("authorization denied: VACUUM INTO is disabled", res.stderr)
-
-            for fpath in (f1, f2, f3, f4, f5):
-                self.assertFalse(os.path.exists(fpath), f"VACUUM INTO created unexpected file: {fpath}")
-
-    def test_sqlite_harness_rejects_file_affecting_pragmas(self) -> None:
-        import subprocess, tempfile
-        adapter = self.registry.get(LanguageId.SQLITE)
-        self.assertIsNotNone(adapter)
-        assert adapter is not None
-        harness_script = adapter.execution_spec.execution_args[2]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dir1 = os.path.join(tmpdir, "temp1")
-            dir2 = os.path.join(tmpdir, "temp2")
-            dir3 = os.path.join(tmpdir, "temp3")
-
-            pragma_statements = [
-                f"PRAGMA temp_store_directory = '{dir1}';\n",
-                f"PRAGMA\n  temp_store_directory\n  = '{dir2}';\n",
-                f"PRAGMA/*comment*/temp_store_directory = '{dir3}';\n",
-                f"PRAGMA data_store_directory = '{tmpdir}';\n",
-                "PRAGMA database_list;\n",
-                "PRAGMA\n  database_list;\n",
-                "PRAGMA/*comment*/database_list;\n",
-                "PRAGMA journal_mode = WAL;\n",
-                "PRAGMA\n  journal_mode\n  = WAL;\n",
-                "PRAGMA/*comment*/journal_mode = WAL;\n",
-                "PRAGMA auto_vacuum = FULL;\n",
-                "PRAGMA mmap_size = 268435456;\n",
-                "PRAGMA temp_store = FILE;\n",
-            ]
-            for stmt in pragma_statements:
-                sql_path = os.path.join(tmpdir, "test.sql")
-                with open(sql_path, "w", encoding="utf-8") as f:
-                    f.write(stmt)
-                res = subprocess.run(
-                    [sys.executable, "-I", "-c", harness_script, sql_path],
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(res.returncode, 1, f"Expected denial for PRAGMA {stmt!r}, got: {res.stdout}")
-                self.assertIn("not authorized", res.stderr)
-
-            for d in (dir1, dir2, dir3):
-                self.assertFalse(os.path.exists(d), f"Directory {d} should not be created")
-
-    def test_sqlite_harness_allows_normal_sql_and_safe_pragmas(self) -> None:
-        import subprocess, tempfile, json
-        adapter = self.registry.get(LanguageId.SQLITE)
-        self.assertIsNotNone(adapter)
-        assert adapter is not None
-        harness_script = adapter.execution_spec.execution_args[2]
-
-        sql = (
-            "CREATE TABLE Items (id INT PRIMARY KEY, name TEXT, qty INT);\n"
-            "INSERT INTO Items VALUES (1, 'apple', 10), (2, 'banana', 20);\n"
-            "UPDATE Items SET qty = 15 WHERE id = 1;\n"
-            "DELETE FROM Items WHERE id = 2;\n"
-            "WITH Stock AS (SELECT sum(qty) AS total_qty FROM Items) SELECT total_qty FROM Stock;\n"
-            "CREATE TRIGGER tr_audit AFTER INSERT ON Items BEGIN UPDATE Items SET name = 'triggered' WHERE id = new.id; END;\n"
-            "INSERT INTO Items VALUES (3, 'cherry', 30);\n"
-            "CREATE VIEW v_items AS SELECT id, name FROM Items WHERE qty >= 15;\n"
-            "SELECT * FROM v_items;\n"
-            "PRAGMA table_info(Items);\n"
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sql_path = os.path.join(tmpdir, "test.sql")
-            with open(sql_path, "w", encoding="utf-8") as f:
-                f.write(sql)
-            res = subprocess.run(
-                [sys.executable, "-I", "-c", harness_script, sql_path],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(res.returncode, 0, f"Harness failed on normal SQL: {res.stderr}")
-            parsed = json.loads(res.stdout)
-            self.assertTrue(isinstance(parsed, list) or isinstance(parsed, dict))
-
-    def test_sqlite_harness_progress_handler_interrupts_at_one_million_opcodes(self) -> None:
-        import subprocess, tempfile
-        adapter = self.registry.get(LanguageId.SQLITE)
-        self.assertIsNotNone(adapter)
-        assert adapter is not None
-        harness_script = adapter.execution_spec.execution_args[2]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sql_path = os.path.join(tmpdir, "solution.sql")
-            sql = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt) SELECT count(*) FROM cnt;\n"
-            with open(sql_path, "w", encoding="utf-8") as f:
-                f.write(sql)
-            res = subprocess.run(
-                [sys.executable, "-I", "-c", harness_script, sql_path],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(res.returncode, 1)
-            self.assertIn("interrupted", res.stderr)
-
-    def test_sqlite_harness_progress_handler_exact_boundary(self) -> None:
-        """Verifies that progress callback stops at the exact 1,000,000 opcode interval (ticks >= max_ticks)."""
-        max_opcodes = 1000000
-        opcode_interval = 100
-        max_ticks = max_opcodes // opcode_interval
-        self.assertEqual(max_ticks, 10000)
-        ticks = 0
-        def progress_cb():
-            nonlocal ticks
-            ticks += 1
-            return 1 if ticks >= max_ticks else 0
-
-        ticks = 9998
-        self.assertEqual(progress_cb(), 0)
-        self.assertEqual(ticks, 9999)
-        self.assertEqual(progress_cb(), 1)
-        self.assertEqual(ticks, 10000)
 
     def test_live_sqlite_execution_with_native_runner(self) -> None:
         import json
@@ -2376,6 +2890,9 @@ class TestExecutionPipeline(unittest.TestCase):
         ]
         self.assertEqual(len(leftovers), 0)
 
+
+if __name__ == "__main__":
+    unittest.main()
 
 if __name__ == "__main__":
     unittest.main()
