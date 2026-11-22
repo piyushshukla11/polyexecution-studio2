@@ -13,6 +13,7 @@ import { useCollaboration } from './hooks/useCollaboration';
 import { apiClient } from './services/api';
 
 export const App: React.FC = () => {
+  const [languages, setLanguages] = useState<LanguageDefinition[]>(LANGUAGES);
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageDefinition>(
     LANGUAGE_MAP.get('python3') || LANGUAGES[0]
   );
@@ -21,17 +22,36 @@ export const App: React.FC = () => {
   );
   const [daemonServing, setDaemonServing] = useState<boolean>(false);
   const [collabModalOpen, setCollabModalOpen] = useState<boolean>(false);
+  const [browserRunNonce, setBrowserRunNonce] = useState<number>(0);
 
-  const { isRunning, milestones, result, execute } = useExecution();
+  const {
+    isRunning,
+    milestones,
+    result,
+    execute,
+    startBrowserExecution,
+    handleBrowserMilestone,
+    handleBrowserResult,
+  } = useExecution();
   const { state: collabState } = useCollaboration();
 
-  // Check daemon connection on mount
+  // Populate dynamic runtime inventory from worker daemon and monitor health
   useEffect(() => {
     let mounted = true;
     const check = async () => {
-      const health = await apiClient.checkHealth();
+      const [health, inventory] = await Promise.all([
+        apiClient.checkHealth(),
+        apiClient.getSupportedRuntimes(),
+      ]);
       if (mounted) {
         setDaemonServing(health.isServing);
+        if (inventory && inventory.length > 0) {
+          setLanguages(inventory);
+          setSelectedLanguage((prev) => {
+            const match = inventory.find((l) => l.id === prev.id);
+            return match || prev;
+          });
+        }
       }
     };
     check();
@@ -51,6 +71,13 @@ export const App: React.FC = () => {
 
   const handleRun = async () => {
     if (isRunning) return;
+    const isBrowser = selectedLanguage.id === 'react' || selectedLanguage.id === 'vanilla_js';
+    if (isBrowser) {
+      startBrowserExecution();
+      setBrowserRunNonce((n) => n + 1);
+      return;
+    }
+
     const requestId = `req-${Date.now()}`;
     await execute({
       requestId,
@@ -74,7 +101,7 @@ export const App: React.FC = () => {
         <div className="studio-editor-column">
           <div className="editor-controls-bar">
             <LanguagePicker
-              languages={LANGUAGES}
+              languages={languages}
               selectedLanguage={selectedLanguage}
               onSelectLanguage={handleSelectLanguage}
             />
@@ -101,10 +128,13 @@ export const App: React.FC = () => {
 
           <div className="terminal-section">
             <OutputTerminal
+              key={browserRunNonce}
               result={result}
               isRunning={isRunning}
               selectedLanguageId={selectedLanguage.id}
               sourceCode={code}
+              onMilestone={handleBrowserMilestone}
+              onResult={handleBrowserResult}
             />
           </div>
         </div>

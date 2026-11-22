@@ -209,28 +209,26 @@ class TestEndToEndRuntimes(unittest.TestCase):
         self.assertIn("sqlite_ok", res.stdout)
 
     def test_e2e_react_verification(self) -> None:
-        """React: client-side isolated sandbox generation and Node check."""
-        self.runner.queue_result(make_runner_result(status="OK", exit_code=0, wall_ms=20, cpu_ms=10, peak_memory_kb=20000, stdout=""))
-
+        """React: verify truthful rejection by server runner as browser-only runtime."""
         req = ExecutionRequest(
             request_id="e2e-react",
             language_id=LanguageId.REACT,
             source_code="export default function App() { return <h1>React OK</h1>; }",
         )
         res = self.pipeline.execute(req)
-        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("Browser-only runtime", res.stderr)
 
     def test_e2e_vanillajs_verification(self) -> None:
-        """Vanilla JS: client-side isolated sandbox generation and Node check."""
-        self.runner.queue_result(make_runner_result(status="OK", exit_code=0, wall_ms=15, cpu_ms=8, peak_memory_kb=15000, stdout=""))
-
+        """Vanilla JS: verify truthful rejection by server runner as browser-only runtime."""
         req = ExecutionRequest(
             request_id="e2e-vanillajs",
             language_id=LanguageId.VANILLA_JS,
             source_code="document.body.innerHTML = 'Vanilla JS OK';",
         )
         res = self.pipeline.execute(req)
-        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("Browser-only runtime", res.stderr)
 
     # -------------------------------------------------------------------------
     # 2. Unsupported Runtimes Honest Failure Verification

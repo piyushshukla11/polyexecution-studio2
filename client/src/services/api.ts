@@ -44,11 +44,17 @@ export class ExecutionApiClient {
       if (resp.ok) {
         const data = await resp.json();
         if (Array.isArray(data.runtimes) && data.runtimes.length > 0) {
-          // Merge truthful backend installed_version into our definition list
           const backendMap = new Map<string, BackendRuntimeItem>(
             data.runtimes.map((r: BackendRuntimeItem) => [r.id, r])
           );
           return LANGUAGES.map((lang) => {
+            // Browser-only runtimes run client-side in the browser sandbox
+            if (lang.id === 'react' || lang.id === 'vanilla_js') {
+              return {
+                ...lang,
+                status: 'supported',
+              };
+            }
             const b = backendMap.get(lang.id);
             if (b) {
               return {
@@ -67,13 +73,12 @@ export class ExecutionApiClient {
     return LANGUAGES;
   }
 
-  async execute(
+  async executeStream(
     request: ExecutionRequest,
     onMilestone?: (event: MilestoneEvent) => void
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
 
-    // Signal accepted
     if (onMilestone) {
       onMilestone({
         milestone: 'ACCEPTED',
@@ -81,6 +86,69 @@ export class ExecutionApiClient {
         details: `Request ${request.requestId} queued for ${request.languageId}`,
       });
     }
+
+    try {
+      const resp = await fetch(`${API_BASE}/execute/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+
+      if (resp.ok && resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let finalResult: ExecutionResult | null = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop() || '';
+
+          for (const block of blocks) {
+            const trimmed = block.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const jsonStr = trimmed.slice(5).trim();
+            try {
+              const event = JSON.parse(jsonStr);
+              if (event.type === 'milestone') {
+                if (onMilestone) {
+                  onMilestone({
+                    milestone: event.milestone,
+                    timestampMs: event.timestampMs || Date.now(),
+                    details: event.details,
+                  });
+                }
+              } else if (event.type === 'result') {
+                finalResult = event.result as ExecutionResult;
+              } else if (event.type === 'error') {
+                throw new Error(event.error);
+              }
+            } catch {
+              // Ignore partial chunk parse failures
+            }
+          }
+        }
+
+        if (finalResult) {
+          return finalResult;
+        }
+      }
+    } catch {
+      // Fallback to executeSync or honest offline result
+    }
+
+    return this.executeSync(request, onMilestone);
+  }
+
+  async executeSync(
+    request: ExecutionRequest,
+    onMilestone?: (event: MilestoneEvent) => void
+  ): Promise<ExecutionResult> {
+    const startTime = Date.now();
 
     try {
       const resp = await fetch(`${API_BASE}/execute`, {
@@ -98,11 +166,10 @@ export class ExecutionApiClient {
         }
         return result;
       }
-    } catch (err) {
-      // Backend HTTP API unavailable; generate honest failure or standalone evaluation
+    } catch {
+      // Backend HTTP API unavailable
     }
 
-    // Honest local evaluation result when backend daemon is offline
     const wallMs = Date.now() - startTime;
     return {
       requestId: request.requestId,
@@ -121,6 +188,13 @@ export class ExecutionApiClient {
       stderr: 'Backend daemon connection failed: Ensure pes2-daemon is running (python -m engine.daemon.server --port 50051).',
       status: 'SANDBOX_ERROR',
     };
+  }
+
+  async execute(
+    request: ExecutionRequest,
+    onMilestone?: (event: MilestoneEvent) => void
+  ): Promise<ExecutionResult> {
+    return this.executeStream(request, onMilestone);
   }
 }
 

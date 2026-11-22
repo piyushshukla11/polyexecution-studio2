@@ -14,12 +14,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libseccomp-dev \
     libseccomp2 \
     openjdk-21-jdk-headless \
+    dotnet-sdk-8.0 \
     python3 \
     python3-pip \
     python3-setuptools \
     python3-wheel \
+    python3-pandas \
+    python3-numpy \
     nodejs \
     ruby-full \
+    php-cli \
     bash \
     sqlite3 \
     ca-certificates \

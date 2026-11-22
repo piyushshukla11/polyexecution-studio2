@@ -1170,7 +1170,7 @@ class RuntimeRegistry:
             id=LanguageId.REACT,
             display_name="React",
             official_version="React 18.2 (Babel, client-side sandbox)",
-            installed_version="Client-side browser sandbox (React 18.2, iframe isolation: sandbox=\"allow-scripts\", strict CSP)",
+            installed_version="Browser-only runtime: client-side execution in isolated browser sandbox (not a server runner)",
             family=RuntimeFamily.FRAMEWORK,
             compile_spec=None,
             execution_spec=ExecutionSpec(
@@ -1196,7 +1196,7 @@ class RuntimeRegistry:
             id=LanguageId.VANILLA_JS,
             display_name="JavaScript (DOM)",
             official_version="Browser JavaScript (ES2022, client-side sandbox)",
-            installed_version="Client-side browser sandbox (DOM ES2022, iframe isolation: sandbox=\"allow-scripts\", strict CSP)",
+            installed_version="Browser-only runtime: client-side execution in isolated browser sandbox (not a server runner)",
             family=RuntimeFamily.FRAMEWORK,
             compile_spec=None,
             execution_spec=ExecutionSpec(

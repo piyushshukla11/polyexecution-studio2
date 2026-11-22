@@ -96,22 +96,22 @@ npm run build
 PolyExecution Studio 2 includes a production-ready, multi-service Docker Compose deployment that packages the entire system with defense-in-depth container defaults.
 
 ### Service Architecture
-- **`reverse-proxy` (Nginx 1.27):** Sole public-facing ingress on `${PES2_PORT:-8088}`. Routes `/api/` to the API gateway and `/` to the client. Hardened with `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
+- **`reverse-proxy` (Nginx 1.27):** Sole public-facing ingress bound strictly to loopback (`${PES2_BIND_HOST:-127.0.0.1}:${PES2_PORT:-8088}:80`) by default. Remote access requires configuring a TLS boundary and server-side authentication (`PES2_API_KEY`). Routes `/api/` to the API gateway and `/` to the client. Hardened with `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
 - **`client` (Web Studio):** Internal static asset server serving production-compiled React 18 bundles, completely off public interfaces.
-- **`api-gateway` (Python HTTP):** Translates incoming HTTP REST and SSE requests to internal gRPC calls against the worker daemon.
-- **`worker-daemon` (Python gRPC):** Core execution supervisor managing isolated ephemeral cgroup sandboxes and admission control.
-- **`db-postgres` (PostgreSQL 16):** Disposable database sandbox configured with unprivileged runner role (`pes2_runner`) and revoked file I/O primitives.
+- **`api-gateway` (Python HTTP):** Translates incoming HTTP REST and SSE requests to internal gRPC calls against the worker daemon. Enforces 256 KiB request payload ceilings, connection socket timeouts (15s), JSON schema validation, custom resource limits bounds, and optional Bearer / X-API-Key token verification.
+- **`worker-daemon` (Python gRPC):** Core execution supervisor managing isolated ephemeral cgroup sandboxes and admission control. Configured with `SYS_ADMIN` capability and cgroups delegation inside Compose for nested unprivileged namespace creation.
+- **`Database Sandboxes`:** SQLite is supported via in-memory isolation. Persistent database containers (`db-postgres`) have been removed from the default production Compose stack until wired to disposable sandbox paths.
 
 ### Quickstart Deployment
 ```bash
-# 1. Create your local environment configuration
+# 1. Create your local environment configuration (bound to loopback 127.0.0.1 by default)
 cp .env.example .env
 
 # 2. Build and launch all services in detached mode
 docker compose up -d
 
 # 3. Verify deployment health
-curl -s http://localhost:8088/api/health
+curl -s http://127.0.0.1:8088/api/health
 
 # 4. View running services and health status
 docker compose ps
@@ -119,14 +119,17 @@ docker compose ps
 
 ### Running Automated Test Suites
 ```bash
-# Run full pytest suite (including Gateway, E2E runtimes, and Load concurrency tests)
+# Run full pytest suite (including Gateway, Ingress, Compose, E2E runtimes, and Load concurrency tests)
 pytest
 
-# Run focused Phase 9 end-to-end and load verification
-pytest tests/test_gateway.py tests/test_e2e_runtimes.py tests/test_load_concurrency.py
+# Run focused hardening, gateway, and Compose integration suites
+pytest tests/test_ingress_hardening.py tests/test_compose_integration.py tests/test_gateway.py
+
+# Run frontend Vitest test suite and production build
+cd client && npm test && npm run build && cd ..
 
 # Run sandbox seccomp profile unit test harness
-cd sandbox && make test
+cd sandbox && make test && cd ..
 ```
 
 ### Clean Teardown

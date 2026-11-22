@@ -148,7 +148,7 @@ class RuntimeAdapter:
     def is_installed(self) -> bool:
         if not self.installed_version:
             return False
-        unsupported_markers = ("Not installed", "Unavailable", "Incomplete")
+        unsupported_markers = ("Not installed", "Unavailable", "Incomplete", "Browser-only")
         return not any(self.installed_version.startswith(m) for m in unsupported_markers)
 
     def resolve_execution_limits(

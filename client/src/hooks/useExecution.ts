@@ -22,9 +22,9 @@ export function useExecution() {
     };
 
     try {
-      const res = await apiClient.execute(request, onMilestone);
+      const res = await apiClient.executeStream(request, onMilestone);
       setResult(res);
-      if (res.finalStatus === 'SANDBOX_ERROR' || res.finalStatus === 'RUNTIME_ERROR') {
+      if (res.finalStatus === 'SANDBOX_ERROR' || res.finalStatus === 'RUNTIME_ERROR' || res.finalStatus === 'TIMEOUT') {
         setError(res.stderr || `Execution finished with status ${res.finalStatus}`);
       }
       return res;
@@ -35,6 +35,27 @@ export function useExecution() {
     } finally {
       setIsRunning(false);
     }
+  }, []);
+
+  const handleBrowserMilestone = useCallback((ev: MilestoneEvent) => {
+    setCurrentMilestone(ev);
+    setMilestones((prev) => [...prev, ev]);
+  }, []);
+
+  const handleBrowserResult = useCallback((res: ExecutionResult) => {
+    setResult(res);
+    setIsRunning(false);
+    if (res.finalStatus === 'RUNTIME_ERROR' || res.finalStatus === 'TIMEOUT') {
+      setError(res.stderr || `Execution finished with status ${res.finalStatus}`);
+    }
+  }, []);
+
+  const startBrowserExecution = useCallback(() => {
+    setIsRunning(true);
+    setError(null);
+    setMilestones([]);
+    setCurrentMilestone(null);
+    setResult(null);
   }, []);
 
   const reset = useCallback(() => {
@@ -52,6 +73,9 @@ export function useExecution() {
     result,
     error,
     execute,
+    startBrowserExecution,
+    handleBrowserMilestone,
+    handleBrowserResult,
     reset,
   };
 }

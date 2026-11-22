@@ -179,14 +179,23 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
     - Python integration suite: `tests/test_client_integration.py` validating language consistency across frontend constants and `engine.models.LanguageId`.
     - Production build verification: `tsc && vite build` clean build generating optimized production assets in `client/dist/`.
 
-### Phase 9: End-to-End Verification & Production Packaging
+### Phase 9: End-to-End Verification, Hardening & Production Packaging
 - Multi-service Docker Compose topology (`docker-compose.yml`):
-  - `reverse-proxy`: Nginx 1.27 reverse proxy exposing only the public host ingress (`${PES2_PORT:-8088}:80`), routing `/api/` to the API gateway and `/` to the client. Hardened with `read_only: true`, `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
+  - `reverse-proxy`: Nginx 1.27 reverse proxy exposing only loopback ingress (`${PES2_BIND_HOST:-127.0.0.1}:${PES2_PORT:-8088}:80`) by default to prevent exposing execution on public interfaces. Hardened with `read_only: true`, `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
   - `client`: internal static asset web server serving production-built React 18 assets, kept off public host interfaces.
-  - `api-gateway`: Python HTTP gateway (`engine.gateway.server`) translating HTTP REST and SSE requests to internal gRPC calls against the worker daemon. Features health checks, runtime catalog synchronization, synchronous execution (`POST /api/execute`), and SSE streaming (`POST /api/execute/stream`).
-  - `worker-daemon`: Python gRPC worker daemon (`engine.daemon.server`) configured with internal service networking (`PES2_ALLOW_INTERNAL_NETWORKING=1`), admission control, memory budgeting, and fail-closed cgroup isolation.
-  - `db-postgres`: PostgreSQL 16 disposable database sandbox service with locked-down non-superuser runner role (`pes2_runner`), disabled file import/export primitives, and internal network isolation.
-  - Security boundaries: zero host port exposure for worker services, zero Docker socket exposure, zero committed secrets (`.env.example` template with gitignored `.env`), and private internal bridge networking (`pes2-internal`).
+  - `api-gateway`: Python HTTP gateway (`engine.gateway.server`) translating HTTP REST and SSE requests to internal gRPC calls against the worker daemon. Enforces 256 KiB maximum request body limits (HTTP 413), 15s socket connection timeouts, JSON schema and resource limits bounds validation (HTTP 400), and optional Bearer/X-API-Key token authentication (`PES2_API_KEY`).
+  - `worker-daemon`: Python gRPC worker daemon (`engine.daemon.server`) configured with internal service networking (`PES2_ALLOW_INTERNAL_NETWORKING=1`), admission control, memory budgeting, and fail-closed cgroup isolation. In Compose, configured with `cap_add: [SYS_ADMIN]`, `security_opt: [seccomp:unconfined]`, and cgroupfs mount for nested sandbox creation.
+  - Database sandboxes: SQLite is supported via in-memory isolation. Persistent database containers (`db-postgres`) have been removed from the default production Compose stack until wired to disposable sandbox paths.
+  - Security boundaries: zero public host port exposure for worker services, zero Docker socket exposure, zero committed secrets (`.env.example` template with gitignored `.env`), and private internal bridge networking (`pes2-internal`).
+- Browser Execution Hardening & Real JSX Support:
+  - Local JSX transpilation via Sucrase compiler and bundled React 18 / ReactDOM UMD scripts embedded directly in isolated iframe srcDoc without external CDNs.
+  - Parent-side execution watchdog timer: enforces a 5000ms timeout terminating hung or looping iframes.
+  - PostMessage origin and schema validation: validates message sender against the preview iframe's `contentWindow` and verifies message types and payload schemas.
+  - Truthful browser boundary documentation: documents that while host DOM, cookies, and storage are completely protected and outbound network fetches are denied by CSP (`connect-src 'none'`), internal iframe self-navigation cannot be completely blocked in all browsers by sandbox attributes alone.
+- Truthful Runtime Status & Telemetry:
+  - Dynamic runtime inventory: `LanguagePicker` is dynamically populated from the worker daemon's `/api/runtimes` inventory.
+  - Real-time SSE milestone streaming: UI connects to `/api/execute/stream` via `ReadableStream` reader, dispatching milestones in real time as code runs.
+  - Separation of browser-only runtimes: `react` and `vanilla_js` are truthfully marked as browser-only runtimes (`is_installed: False` on server worker daemon), executed directly via the client-side browser preview path, and rejected with HTTP 400 if sent to the server runner.
 - Automated end-to-end runtime verification (`tests/test_e2e_runtimes.py`):
   - Verified 12 supported runtimes end-to-end: C++, C, Java, Python 3, JavaScript, Ruby, Bash, C#, SQLite, Pandas, React, and Vanilla JS.
   - Verified 12 uninstalled or unavailable runtimes fail closed honestly with truthful error reporting: Python 2, Swift, Go, Rust, Kotlin, Scala, Dart, MySQL, MS SQL Server, Oracle SQL, PostgreSQL, and Pandas (when host python pandas is in user path).
@@ -195,8 +204,12 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
   - Resource limit enforcement under concurrent load (CPU ceilings, memory limits, wall-clock timeout detection).
   - Deterministic cleanup verifying complete removal of ephemeral workspace directories (`/tmp/pes2-*`) across success, failure, timeout, and cancellation.
   - Graceful cancellation handling under concurrent execution.
-- API Gateway test suite (`tests/test_gateway.py`):
-  - 9 unit and integration tests verifying health checks, runtime inventory, synchronous execution, SSE streaming, CORS preflight, malformed JSON handling, 404 routing, and 503 daemon-offline fallback.
+- Hardening & Compose integration test suites:
+  - `tests/test_ingress_hardening.py`: 12 tests verifying request size limits (413), schema validation (400), custom limits bounds (400), browser-only rejection (400), and token authentication (401).
+  - `tests/test_compose_integration.py`: 6 tests verifying Compose topology, loopback binding, worker capabilities, and real kernel namespace execution checks.
+  - `client/tests/BrowserSandboxHardening.test.tsx`: 6 tests verifying Sucrase JSX compilation, error handling, watchdog timeout, and postMessage validation.
+  - `client/tests/ApiStreaming.test.ts`: 3 tests verifying real-time SSE milestone streaming, dynamic inventory population, and offline fallbacks.
+  - Total test coverage: 194 passing Python tests (34 skips), 24 passing Vitest tests, and 220 passing C seccomp profile unit verification tests.
 
 ---
 

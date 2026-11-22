@@ -3167,99 +3167,35 @@ class TestExecutionPipeline(unittest.TestCase):
             self.assertEqual(parsed["columns"], ["x", "y"])
             self.assertEqual(parsed["rows"], [["A", 100], ["B", 200]])
 
-    def test_react_truthful_milestones_no_compiling(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("OK", 0, 0, 50, 40, 20000, "", "")
-        )
+    def test_react_browser_only_rejected_by_server_pipeline(self) -> None:
         request = ExecutionRequest(
-            request_id="req-react-ok",
+            request_id="req-react-rej",
             language_id=LanguageId.REACT,
             source_code="export default function App() { return <div>Hello React</div>; }\n",
         )
         res = self.pipeline.execute(request)
 
-        self.assertEqual(res.final_status, Milestone.COMPLETED)
-        self.assertEqual(res.exit_code, 0)
-        milestone_names = [m.milestone for m in res.milestones]
-        expected = [
-            Milestone.ACCEPTED,
-            Milestone.RUNNING,
-            Milestone.COMPLETED,
-        ]
-        self.assertEqual(milestone_names, expected)
-        self.assertNotIn(Milestone.COMPILING, milestone_names)
-        self.assertEqual(len(self.runner.invocations), 1)
-        inv = self.runner.invocations[0]
-        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.NODE)
-
-    def test_react_syntax_or_runtime_error_milestone(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("RUNTIME_ERROR", 1, 0, 40, 30, 20000, "", "SyntaxError: Unexpected token\n")
-        )
-        request = ExecutionRequest(
-            request_id="req-react-err",
-            language_id=LanguageId.REACT,
-            source_code="export default function App( { return <div>;\n",
-        )
-        res = self.pipeline.execute(request)
-
-        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
         self.assertEqual(res.exit_code, 1)
-        self.assertIn("SyntaxError", res.stderr)
+        self.assertIn("Browser-only runtime", res.stderr)
         milestone_names = [m.milestone for m in res.milestones]
-        expected = [
-            Milestone.ACCEPTED,
-            Milestone.RUNNING,
-            Milestone.RUNTIME_ERROR,
-        ]
-        self.assertEqual(milestone_names, expected)
+        self.assertIn(Milestone.SANDBOX_ERROR, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 0)
 
-    def test_vanilla_js_truthful_milestones_no_compiling(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("OK", 0, 0, 50, 40, 20000, "", "")
-        )
+    def test_vanilla_js_browser_only_rejected_by_server_pipeline(self) -> None:
         request = ExecutionRequest(
-            request_id="req-vjs-ok",
+            request_id="req-vjs-rej",
             language_id=LanguageId.VANILLA_JS,
             source_code="const root = document.getElementById('root'); root.textContent = 'Hello DOM';\n",
         )
         res = self.pipeline.execute(request)
 
-        self.assertEqual(res.final_status, Milestone.COMPLETED)
-        self.assertEqual(res.exit_code, 0)
-        milestone_names = [m.milestone for m in res.milestones]
-        expected = [
-            Milestone.ACCEPTED,
-            Milestone.RUNNING,
-            Milestone.COMPLETED,
-        ]
-        self.assertEqual(milestone_names, expected)
-        self.assertNotIn(Milestone.COMPILING, milestone_names)
-        self.assertEqual(len(self.runner.invocations), 1)
-        inv = self.runner.invocations[0]
-        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.NODE)
-
-    def test_vanilla_js_syntax_or_runtime_error_milestone(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("RUNTIME_ERROR", 1, 0, 40, 30, 20000, "", "SyntaxError: Unexpected token ';'\n")
-        )
-        request = ExecutionRequest(
-            request_id="req-vjs-err",
-            language_id=LanguageId.VANILLA_JS,
-            source_code="const x = ;\n",
-        )
-        res = self.pipeline.execute(request)
-
-        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
         self.assertEqual(res.exit_code, 1)
-        self.assertIn("SyntaxError", res.stderr)
+        self.assertIn("Browser-only runtime", res.stderr)
         milestone_names = [m.milestone for m in res.milestones]
-        expected = [
-            Milestone.ACCEPTED,
-            Milestone.RUNNING,
-            Milestone.RUNTIME_ERROR,
-        ]
-        self.assertEqual(milestone_names, expected)
+        self.assertIn(Milestone.SANDBOX_ERROR, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 0)
 
     def test_live_pandas_execution_with_native_runner(self) -> None:
         pandas_adapter = self.registry.get(LanguageId.PANDAS)

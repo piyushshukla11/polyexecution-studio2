@@ -95,10 +95,12 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertIn("react", runtime_map)
         self.assertIn("vanilla_js", runtime_map)
 
-        # React and Vanilla JS verified installed client-side sandbox
-        self.assertTrue(runtime_map["react"].is_installed)
+        # React and Vanilla JS are truthful browser-only client runtimes (not server-installed)
+        self.assertFalse(runtime_map["react"].is_installed)
+        self.assertIn("Browser-only runtime", runtime_map["react"].installed_version)
         self.assertEqual(runtime_map["react"].display_name, "React")
-        self.assertTrue(runtime_map["vanilla_js"].is_installed)
+        self.assertFalse(runtime_map["vanilla_js"].is_installed)
+        self.assertIn("Browser-only runtime", runtime_map["vanilla_js"].installed_version)
         self.assertEqual(runtime_map["vanilla_js"].display_name, "JavaScript (DOM)")
         self.assertEqual(runtime_map["pandas"].display_name, "Pandas")
 
@@ -898,10 +900,7 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"id"', result_response.stdout)
         self.assertIn('"data"', result_response.stdout)
 
-    async def test_execute_stream_react_success(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("OK", 0, 0, 40, 30, 20000, "", "")
-        )
+    async def test_execute_stream_react_browser_only_rejected(self) -> None:
         req = execution_pb2.ExecuteRequest(
             request_id="req-daemon-react",
             language_id="react",
@@ -919,18 +918,13 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             if resp.HasField("result"):
                 result_response = resp.result
 
-        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
-        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
-        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
-        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_SANDBOX_ERROR, milestones)
         self.assertIsNotNone(result_response)
         assert result_response is not None
-        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_SANDBOX_ERROR)
+        self.assertIn("Browser-only runtime", result_response.stderr)
 
-    async def test_execute_stream_vanilla_js_success(self) -> None:
-        self.runner.queue_result(
-            RunnerResult("OK", 0, 0, 40, 30, 20000, "", "")
-        )
+    async def test_execute_stream_vanilla_js_browser_only_rejected(self) -> None:
         req = execution_pb2.ExecuteRequest(
             request_id="req-daemon-vjs",
             language_id="vanilla_js",
@@ -948,13 +942,11 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             if resp.HasField("result"):
                 result_response = resp.result
 
-        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
-        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
-        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
-        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_SANDBOX_ERROR, milestones)
         self.assertIsNotNone(result_response)
         assert result_response is not None
-        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_SANDBOX_ERROR)
+        self.assertIn("Browser-only runtime", result_response.stderr)
 
 
 
