@@ -228,6 +228,25 @@ The remote execution worker daemon mediates between external orchestration/API c
     - Server-Side Syntax Verification:
       - Backend adapter supports syntax verification via Node.js `--check` (`SECCOMP_PROFILE_NODE`) bounded under 128 MiB memory limit.
 
+### Web Studio Client & Collaborative Editor Architecture (Phase 8)
+13. **Frontend Application Architecture & Component Topology:**
+    - Technology stack: React 18, TypeScript (strict mode), and Vite bundler configured for sub-second hot module replacement and production tree-shaking.
+    - Component topology:
+      - `Header`: studio branding, loopback worker daemon serving status, standalone collaboration badge, and primary execution action button.
+      - `LanguagePicker`: accessible language selector with real-time text search, execution family filtering (`NATIVE`, `JVM`, `INTERPRETED`, `DOTNET`, `DATABASE`, `FRAMEWORK`), and truthful status badges (`Supported`, `In Dev`, `Uninstalled`).
+      - `EditorWorkspace`: Monaco code editor (`@monaco-editor/react`) integration with dark theme (`vs-dark`), keyboard shortcut bindings (`Ctrl+Enter` execution), and syntax modes for all 27 LeetCode languages + Bash.
+      - `TelemetryPanel`: real-time kernel telemetry card rendering Linux cgroups v2 resource metrics (`wallMs`, `cpuMs`, `peakMemoryKb`, `exitCode`, `signal`, `status`, and milestone lifecycle chips).
+      - `OutputTerminal`: multi-stream output viewer supporting raw standard output, formatted standard error streams with copy support, structured JSON tabular preview for SQL/Pandas results (`TabularPreview`), and live isolated iframe UI preview (`BrowserPreview`).
+      - `CollaborationBanner`: modal dialog explicitly detailing the collaborative editing architecture and documenting backend requirements.
+
+14. **Collaborative Editing Architecture & Honesty Doctrine:**
+    - Backend capability audit: The existing backend architecture is centered on isolated, stateless gRPC execution worker daemons (`ExecutionWorkerService`), designed for single-shot or streaming execution against ephemeral cgroup sandboxes. The backend currently lacks a persistent stateful WebSocket synchronization server or document store.
+    - Non-negotiable honesty principle: The studio strictly rejects fake collaboration patterns (such as simulated collaborator cursors, random typing bots, or fake online avatars).
+    - Standalone mode and extensibility contract:
+      - The client operates in an explicit `standalone` mode (`useCollaboration` hook).
+      - The UI explicitly informs operators that real-time multi-user synchronization requires a persistent WebSocket CRDT document gateway (e.g., Yjs / y-websocket or Automerge daemon), document room discovery, and presence awareness protocol.
+      - The frontend abstraction cleanly decouples editor state from the synchronization layer, allowing a persistent WebSocket CRDT gateway to be dropped in without refactoring editor components.
+
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
 1. **Unified Memory Footprint:** A Kotlin daemon requires a persistent JVM runtime on the host consuming 150-300 MiB baseline RSS solely for RPC dispatch, competing with sandboxed compilations for host RAM.
