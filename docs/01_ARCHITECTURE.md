@@ -255,7 +255,46 @@ During Phase 3 architectural refinement, the worker daemon was implemented using
 
 ---
 
-## 6. Architectural Non-Goals & Honest Limitations
+## 6. Production Packaging & Multi-Service Orchestration (Phase 9)
+
+### Service Mesh Topology & Ingress Architecture
+PolyExecution Studio 2 is packaged as an isolated multi-service Docker Compose topology:
+
+1. **Ingress Reverse Proxy (`reverse-proxy`):**
+   - Nginx 1.27 acts as the sole public-facing ingress, listening on `${PES2_PORT:-8088}`.
+   - Routes `/api/` to the HTTP API Gateway and `/` to the static client web server.
+   - Disables proxy buffering for Server-Sent Events (`/api/execute/stream`) to deliver sub-millisecond progress events to clients.
+   - Enforces strict container hardening: `read_only: true`, `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, `security_opt: [no-new-privileges:true]`, and tmpfs filesystem mounts.
+
+2. **Frontend Web Studio (`client`):**
+   - Multi-stage Dockerfile compiling React 18 + TypeScript + Vite into optimized static bundles, served via an unprivileged internal Nginx server.
+   - Operates strictly on the internal bridge network (`pes2-internal`) with zero host port bindings.
+
+3. **HTTP API Gateway (`api-gateway`):**
+   - Python 3.12 HTTP gateway bridging Web Studio REST/SSE requests to the Worker Daemon via gRPC (`engine.gateway.server`).
+   - Translates between HTTP JSON payloads and `execution.proto` messages.
+   - Provides `/api/health`, `/api/runtimes`, `/api/execute`, and `/api/execute/stream`.
+   - Runs as unprivileged user `pes2` on `pes2-internal` with no public port exposure.
+
+4. **Remote Execution Worker Daemon (`worker-daemon`):**
+   - Python `grpc.aio` execution daemon (`engine.daemon.server`) running on internal gRPC port 50051.
+   - Configured with `PES2_ALLOW_INTERNAL_NETWORKING=1` for secure private service mesh communication.
+   - Strictly unexposed to host or public interfaces; protected by admission control and dynamic memory budgets.
+
+5. **Disposable Database Sandbox (`db-postgres`):**
+   - Ephemeral PostgreSQL 16 database sandbox on `pes2-internal`.
+   - Configured with non-superuser runner role (`pes2_runner`) and engine-level file I/O primitives strictly revoked.
+   - Isolated from public host interfaces; secrets managed via `.env.example` templates and environment variables without committing credentials.
+
+### Container Security Posture & Isolation Boundaries
+- **No Docker Socket Mounting:** Neither the worker daemon nor the API gateway mounts `/var/run/docker.sock`. Containerized services cannot inspect, control, or spawn sibling containers.
+- **Resource Limits:** Every service definition in `docker-compose.yml` specifies explicit CPU quota (`cpus`) and memory caps (`memory`).
+- **Internal Service Mesh:** Worker, gateway, database, and client services reside on an isolated bridge network (`pes2-internal`), preventing direct ingress from external networks.
+- **Rootless Container Environments:** When running in rootless Docker or containerized environments, nested user namespace creation and cgroup v2 controller delegation require host delegation. Bare-metal Linux host execution remains the primary deployment model for kernel-enforced sandboxing.
+
+---
+
+## 7. Architectural Non-Goals & Honest Limitations
 - **No Emulation of LeetCode Services:** PES 2 executes code; it does not clone LeetCode's frontend UI, question text, subscription models, or proprietary test cases.
 - **Single-Host vs Multi-Host Clustering:** The initial architecture targets a clean, vertically sliced single-host engine with transparent resource admission before distributed clustering is considered.
 - **Docker Socket Independence:** Core sandbox capabilities rely directly on Linux kernel primitives (cgroups v2, namespaces, seccomp) to avoid requiring privileged Docker-in-Docker daemons.
