@@ -18,7 +18,7 @@ As of **2026-11-17**, LeetCode supports 27 distinct environments categorized int
 | **Native Compiled** | C (`gcc 14`), C++ (`clang 19`), Rust (`rustc 1.99.1`), Go (`go 1.27`), Swift (`swift 6.4.1`) | 2-Stage: Sandbox compile -> Bounded binary handoff -> Sandbox execution | Out-of-memory during compilation, ASan memory overhead, binary bloat, static vs dynamic linkage |
 | **JVM** | Java (`OpenJDK 25`), Kotlin (`kotlinc 2.4.21`), Scala (`scala 3.9.0`) | 2-Stage: Sandbox compile -> Bounded bytecode JAR handoff -> JVM execution | JIT compilation threads, VM memory footprint (>64 MiB base RSS), JVM signal interception (SIGSEGV/SIGQUIT) |
 | **Interpreted Scripting** | Python 3 (`3.14`), Python 2 (`2.7.18`), JavaScript (`Node.js 26.12.1`), TypeScript (`tsc 7.0.2`), Ruby (`ruby 4.0`), PHP (`php 8.5`), Bash (`bash 5.2.21`), Dart (`dart 3.13`), Racket (`racket cs 9.3`), Erlang (`OTP 29`), Elixir (`elixir 1.20`), C# (`.NET 10`) | Direct execution or script pre-transpilation | V8 pointer compression cage (requires ~4-5 GiB virtual address space), subshell spawns (Bash), multi-threaded VM daemons |
-| **Database Engines (SQL)** | MySQL (`9.7`), PostgreSQL (`18`), MS SQL Server (`2019`), Oracle SQL (`11.2`) | Ephemeral disposable schema per run -> Query evaluation -> Result table serialization | Persistent state pollution, concurrent schema collisions, network loopback security, database daemon startup latency |
+| **Database Engines (SQL)** | SQLite (`3.54`), MySQL (`9.7`), PostgreSQL (`18`), MS SQL Server (`2019`), Oracle SQL (`11.2`) | Ephemeral disposable schema / in-memory database per run -> Query evaluation -> Result table serialization | Persistent state pollution, concurrent schema collisions, network loopback security, database daemon startup latency |
 | **Frameworks & UI** | Pandas (`Python 3.14 + pandas 3.1.0`), React (`React 18.2.0`), Vanilla JS (DOM) | Headless evaluation (Pandas) / Isolated browser sandbox iframe (React/DOM) | Heavy data allocations (NumPy/Pandas SIMD), DOM XSS in browser evaluation, exfiltration via DOM APIs |
 
 ---
@@ -150,6 +150,25 @@ The remote execution worker daemon mediates between external orchestration/API c
    - Preserves default sandbox `clone` handling (no namespace flags) and returns `ENOSYS` on `clone3`. Strict default-deny remains enforced for all network calls (`socket`, `connect`, etc.), capabilities (`capset`), and scheduler modifications (`sched_setparam`, `sched_setscheduler`, `setpriority`, `nice`).
    - Zero additional mounts required: all Erlang runtime executables and OTP libraries reside entirely within `/usr/bin` and `/usr/lib/erlang`, which are already bind-mounted read-only into `/usr` in the rootfs.
    - Bounded under an empirically measured 192 MiB cgroup limit (`196608 KiB`), accommodating the BEAM VM baseline RSS of ~56.8 MiB and heavy 1,000,000-integer workloads peaking at ~118.8 MiB with comfortable headroom, paired with a 64-PID limit.
+
+### Disposable SQL Database Sandboxes Architecture (Phase 6)
+10. **SQLite Ephemeral In-Memory Sandbox (`SECCOMP_PROFILE_PYTHON`) & Trusted API Harness:**
+    - Single-stage direct execution via `/usr/bin/python3 -I -c "<sqlite_harness_script>" /workspace/solution.sql`.
+    - Truthful milestone emissions: `ACCEPTED` -> `RUNNING` -> `COMPLETED` / `RUNTIME_ERROR` (never emits synthetic `COMPILING` milestones).
+    - Ephemeral `:memory:` database instance created strictly per request: eliminated all host state pollution, lock files, disk persistence, and database service dependencies.
+    - Interactive shell bypass: execution bypasses `/usr/bin/sqlite3` interactive shell entirely, preventing shell dot-command interpretation (`.shell`, `.import`, `.output`, `.system`). Any dot-command in user submissions triggers a standard syntax error at the SQL engine level (`near ".": syntax error`).
+    - Engine-level security controls via SQLite C/Python API:
+      - Extension loading disabled (`conn.enable_load_extension(False)` if available).
+      - Authorizer callback (`conn.set_authorizer`): denies `SQLITE_ATTACH` operations (`not authorized`), preventing dynamic attachment of disk-based databases.
+      - Arbitrary file creation defense (`VACUUM INTO`): SQLite does not provide a dedicated `SQLITE_VACUUM` authorizer action code, and denying `ATTACH` does not reliably guarantee denial of `VACUUM INTO` across all runtime environments. Because `/workspace` is writable, the trusted harness inspects SQL statements (stripping string literals and comments, matching across newlines and whitespace via `re.DOTALL`) to strictly reject `VACUUM INTO` commands before execution (`SQLite error: authorization denied: VACUUM INTO is disabled`), ensuring a submission cannot create, dump, or overwrite database files on disk.
+      - Opcode progress handler (`conn.set_progress_handler`): evaluates execution every 100 VM instructions and aborts when cumulative ticks reach `1,000,000 // 100 = 10,000` ticks (`ticks >= max_ticks`), stopping at the exact 1,000,000-opcode interval to terminate runaway recursive CTEs (`WITH RECURSIVE`) or Cartesian joins prior to cgroup wall timeouts.
+      - Semicolon splitting & parser regression resilience: statements are split and validated using SQLite's native statement parser (`sqlite3.complete_statement`). The splitting preserves valid statements with semicolons inside single/double-quoted string literals and trigger bodies (`CREATE TRIGGER ... BEGIN ...; ...; END;`), while filtering out empty statements and comments (`--` and `/* ... */`).
+      - Result bounding: queries are fetched with `cur.fetchmany(1000)` and emitted as structured JSON (`{"columns": [...], "rows": [...]}`).
+    - Installed version truthfulness: reports the exact SQLite library version linked into Python's `sqlite3` execution module (`sqlite3.sqlite_version`, e.g. `3.54.0` in `/usr/bin/python3`), ensuring client runtime metadata matches execution.
+    - Zero Tier A changes required: reuses `SECCOMP_PROFILE_PYTHON` (profile 2). Sandbox rootfs already bind-mounts `/usr/lib/libsqlite3.so.0` (SQLite 3.54.0-1).
+    - Strict resource bounds: 2,000 ms CPU timeout, 3,000 ms wall timeout, 64 MiB cgroup memory limit (`65536 KiB`), 16 PIDs limit, 64 KiB output cap.
+    - Deterministic ephemeral cleanup: guaranteed cleanup of Python harness processes, workspace directories, and in-memory structures in `ExecutionPipeline` on completion, error, timeout, or cancellation.
+    - Truthful unsupported database status: PostgreSQL (server daemon uninstalled), MySQL (uninstalled), MS SQL Server (uninstalled), and Oracle (uninstalled) are truthfully registered as unsupported and fail closed.
 
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:

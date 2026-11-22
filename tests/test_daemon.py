@@ -525,6 +525,10 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error TS1005", result_response.stderr)
 
     async def test_execute_stream_dart_success(self) -> None:
+        dart_adapter = self.registry.get(LanguageId.DART)
+        if not dart_adapter or not dart_adapter.is_installed:
+            self.skipTest("Dart toolchain not installed on host or /opt/dart-sdk inaccessible")
+
         self.runner.queue_result(
             RunnerResult("OK", 0, 0, 500, 480, 122880, "hello from dart daemon\n", "")
         )
@@ -622,6 +626,105 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         assert result_response is not None
         self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
         self.assertEqual(result_response.stdout, "hello from erlang daemon\n")
+
+    async def test_execute_stream_sqlite_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 50, 30, 20000, '{"columns": ["id", "val"], "rows": [[1, "sqlite"]]}\n', "")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-sqlite",
+            language_id="sqlite",
+            source_code="CREATE TABLE t (id INT, val TEXT); INSERT INTO t VALUES (1, 'sqlite'); SELECT * FROM t;\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertIn('"columns"', result_response.stdout)
+        self.assertIn('"rows"', result_response.stdout)
+
+    async def test_execute_stream_sqlite_syntax_error(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 50, 30, 20000, "", "SQLite error: near \"FRO\": syntax error\n")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-sqlite-err",
+            language_id="sqlite",
+            source_code="SELECT * FRO t;\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNTIME_ERROR, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_RUNTIME_ERROR)
+        self.assertEqual(result_response.exit_code, 1)
+        self.assertIn("syntax error", result_response.stderr)
+
+    async def test_execute_stream_sqlite_vacuum_into_denied(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 50, 30, 20000, "", "SQLite error: authorization denied: VACUUM INTO is disabled\n")
+        )
+
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-sqlite-vacuum-into",
+            language_id="sqlite",
+            source_code="CREATE TABLE t (id INT); VACUUM\n  INTO\n  '/workspace/dump.db';\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNTIME_ERROR, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_RUNTIME_ERROR)
+        self.assertEqual(result_response.exit_code, 1)
+        self.assertIn("VACUUM INTO is disabled", result_response.stderr)
 
     async def test_memory_admission_control(self) -> None:
         """Verifies that requests exceeding available daemon memory capacity are rejected with RESOURCE_EXHAUSTED."""
@@ -1600,6 +1703,68 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
             self.assertEqual(final_res.exit_code, 0)
             self.assertEqual(final_res.stdout.strip(), "gRPC live Erlang execution OK")
+
+            # Verify cgroup cleanup
+            leftovers = [
+                d for d in os.listdir(cgroup_root)
+                if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+            ]
+            self.assertEqual(len(leftovers), 0)
+        finally:
+            await channel.close()
+            await server.stop(grace=0.5)
+
+    async def test_grpc_sqlite_execution_with_real_native_runner(self) -> None:
+        """Integration test verifying real gRPC SQLite ExecuteStream through NativeSandboxRunner."""
+        import subprocess
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-Ur", "true"], capture_output=True, timeout=2)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        server, port = create_server(host="127.0.0.1", port=0, runner=runner)
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+        stub = execution_pb2_grpc.ExecutionWorkerServiceStub(channel)
+
+        try:
+            sql_src = "CREATE TABLE t (id INT, val TEXT); INSERT INTO t VALUES (1, 'grpc_sqlite_ok'); SELECT * FROM t;\n"
+            req = execution_pb2.ExecuteRequest(
+                request_id="req-live-grpc-sqlite",
+                language_id="sqlite",
+                source_code=sql_src,
+            )
+            call = stub.ExecuteStream(req)
+            milestones = []
+            final_res = None
+            while True:
+                ev = await call.read()
+                if ev is grpc.aio.EOF:
+                    break
+                if ev.HasField("milestone_event"):
+                    milestones.append(ev.milestone_event.milestone)
+                if ev.HasField("result"):
+                    final_res = ev.result
+
+            self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+            self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+            self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+            self.assertIsNotNone(final_res)
+            assert final_res is not None
+            self.assertEqual(final_res.final_status, execution_pb2.MILESTONE_COMPLETED)
+            self.assertEqual(final_res.exit_code, 0)
+            self.assertIn('"grpc_sqlite_ok"', final_res.stdout)
 
             # Verify cgroup cleanup
             leftovers = [
