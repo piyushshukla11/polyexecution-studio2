@@ -28,13 +28,22 @@ def create_server(
     max_capacity: int = 16,
     max_memory_kb: Optional[int] = None,
     pipeline: Optional[ExecutionPipeline] = None,
+    allow_internal_network: bool = False,
 ) -> Tuple[grpc.aio.Server, int]:
     """Creates and configures an asynchronous gRPC worker daemon server.
-    Enforces loopback-only binding to prevent unauthenticated remote exposure.
+    Enforces loopback-only binding to prevent unauthenticated remote exposure unless
+    internal service networking is explicitly enabled for containerized private mesh.
     """
+    allow_internal = allow_internal_network or os.environ.get("PES2_ALLOW_INTERNAL_NETWORKING") == "1"
     if host not in ALLOWED_LOOPBACK_HOSTS:
-        raise ValueError(
-            f"Security violation: Binding to non-loopback host '{host}' is prohibited until authentication and TLS are implemented."
+        if not allow_internal:
+            raise ValueError(
+                f"Security violation: Binding to non-loopback host '{host}' is prohibited until authentication and TLS are implemented."
+            )
+        logger.warning(
+            "Internal service networking enabled: daemon binding to '%s'. "
+            "Ensure service is strictly contained on private internal Docker networks and not exposed publicly.",
+            host,
         )
 
     if pipeline is None:
@@ -69,6 +78,7 @@ async def run_server(
     max_capacity: int = 16,
     max_memory_kb: Optional[int] = None,
     pipeline: Optional[ExecutionPipeline] = None,
+    allow_internal_network: bool = False,
 ) -> None:
     """Starts the gRPC server and waits until terminated."""
     server, bound_port = create_server(
@@ -78,6 +88,7 @@ async def run_server(
         max_capacity=max_capacity,
         max_memory_kb=max_memory_kb,
         pipeline=pipeline,
+        allow_internal_network=allow_internal_network,
     )
     await server.start()
     logger.info("PES 2 Worker Daemon listening on %s:%d", host, bound_port)
@@ -102,14 +113,27 @@ def main(args_list: Optional[list] = None) -> int:
         help="Operator-configured host memory execution budget in MiB (defaults to safe budget derived from host memory with headroom)",
     )
     parser.add_argument("--cgroup-root", default=None, help="Explicit cgroups v2 root path")
+    parser.add_argument(
+        "--allow-internal-network",
+        action="store_true",
+        default=False,
+        help="Permit binding to private internal container network interfaces (e.g. 0.0.0.0 in Docker Compose)",
+    )
 
     args = parser.parse_args(args_list)
 
+    allow_internal = args.allow_internal_network or os.environ.get("PES2_ALLOW_INTERNAL_NETWORKING") == "1"
     if args.host not in ALLOWED_LOOPBACK_HOSTS:
-        sys.stderr.write(
-            f"Error: Security restriction: Binding to non-loopback host '{args.host}' is prohibited until authentication and TLS are implemented.\n"
+        if not allow_internal:
+            sys.stderr.write(
+                f"Error: Security restriction: Binding to non-loopback host '{args.host}' is prohibited until authentication and TLS are implemented.\n"
+            )
+            return 2
+        logger.warning(
+            "Internal service networking enabled: daemon binding to '%s'. "
+            "Ensure service is strictly contained on private internal Docker networks and not exposed publicly.",
+            args.host,
         )
-        return 2
 
     if args.cgroup_root:
         os.environ["PES2_CGROUP_ROOT"] = args.cgroup_root

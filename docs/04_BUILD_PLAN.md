@@ -180,6 +180,32 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
     - Production build verification: `tsc && vite build` clean build generating optimized production assets in `client/dist/`.
 
 ### Phase 9: End-to-End Verification & Production Packaging
-- Multi-service Docker Compose configuration (Client reverse proxy, API Gateway, Worker daemon, Database sandboxes).
-- Automated integration test suite validating all supported runtimes end-to-end.
-- Load testing under concurrent execution stress.
+- Multi-service Docker Compose topology (`docker-compose.yml`):
+  - `reverse-proxy`: Nginx 1.27 reverse proxy exposing only the public host ingress (`${PES2_PORT:-8088}:80`), routing `/api/` to the API gateway and `/` to the client. Hardened with `read_only: true`, `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
+  - `client`: internal static asset web server serving production-built React 18 assets, kept off public host interfaces.
+  - `api-gateway`: Python HTTP gateway (`engine.gateway.server`) translating HTTP REST and SSE requests to internal gRPC calls against the worker daemon. Features health checks, runtime catalog synchronization, synchronous execution (`POST /api/execute`), and SSE streaming (`POST /api/execute/stream`).
+  - `worker-daemon`: Python gRPC worker daemon (`engine.daemon.server`) configured with internal service networking (`PES2_ALLOW_INTERNAL_NETWORKING=1`), admission control, memory budgeting, and fail-closed cgroup isolation.
+  - `db-postgres`: PostgreSQL 16 disposable database sandbox service with locked-down non-superuser runner role (`pes2_runner`), disabled file import/export primitives, and internal network isolation.
+  - Security boundaries: zero host port exposure for worker services, zero Docker socket exposure, zero committed secrets (`.env.example` template with gitignored `.env`), and private internal bridge networking (`pes2-internal`).
+- Automated end-to-end runtime verification (`tests/test_e2e_runtimes.py`):
+  - Verified 12 supported runtimes end-to-end: C++, C, Java, Python 3, JavaScript, Ruby, Bash, C#, SQLite, Pandas, React, and Vanilla JS.
+  - Verified 12 uninstalled or unavailable runtimes fail closed honestly with truthful error reporting: Python 2, Swift, Go, Rust, Kotlin, Scala, Dart, MySQL, MS SQL Server, Oracle SQL, PostgreSQL, and Pandas (when host python pandas is in user path).
+- Concurrency load testing (`tests/test_load_concurrency.py`):
+  - 16-worker concurrent execution stress validating zero workspace collision across concurrent requests.
+  - Resource limit enforcement under concurrent load (CPU ceilings, memory limits, wall-clock timeout detection).
+  - Deterministic cleanup verifying complete removal of ephemeral workspace directories (`/tmp/pes2-*`) across success, failure, timeout, and cancellation.
+  - Graceful cancellation handling under concurrent execution.
+- API Gateway test suite (`tests/test_gateway.py`):
+  - 9 unit and integration tests verifying health checks, runtime inventory, synchronous execution, SSE streaming, CORS preflight, malformed JSON handling, 404 routing, and 503 daemon-offline fallback.
+
+---
+
+## 4. PES 2 Roadmap Conclusion & Remaining Gaps
+
+With Phase 9 completed, the full 10-phase staged build plan (Phases 0 through 9) is fully implemented and verified against the production security model. No Phase 10 exists in the project roadmap.
+
+### Known Roadmap Gaps & Future Enhancements
+1. **Host Toolchain Installation:** 12 of the 28 programming environments currently report as uninstalled or unavailable on this host system. Installing system packages for Python 2, Swift, Go, Rust, Kotlin (system-wide), Scala, Dart, MySQL, MS SQL, Oracle, PostgreSQL server daemon, and system-wide Pandas will expand the verified supported runtime count.
+2. **Persistent Collaborative Synchronization Gateway:** The Web Studio client currently operates in standalone editor mode per the project's zero-trust honesty doctrine. Adding a stateful WebSocket CRDT document server (e.g. Yjs / y-websocket or Automerge) will enable multi-user real-time collaborative editing.
+3. **Multi-Node Cluster Security (mTLS & Auth):** The worker daemon binds strictly to loopback or private container networks. Exposing the gRPC service across multi-host distributed clusters will require mutual TLS (mTLS), token-based authentication (JWT), and external TLS termination.
+4. **Rootless Docker Nested Namespace Limits:** In rootless Docker container environments, nested unprivileged user namespace creation and cgroup v2 controller delegation require host systemd cgroup tree delegation or privileged capability flags. Bare-metal Linux host execution remains the primary production deployment target for kernel-enforced sandboxing.

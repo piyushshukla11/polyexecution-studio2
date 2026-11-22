@@ -88,3 +88,48 @@ npm test
 # Run TypeScript type check and production bundle build
 npm run build
 ```
+
+---
+
+## 5. Production Packaging & Docker Compose Deployment
+
+PolyExecution Studio 2 includes a production-ready, multi-service Docker Compose deployment that packages the entire system with defense-in-depth container defaults.
+
+### Service Architecture
+- **`reverse-proxy` (Nginx 1.27):** Sole public-facing ingress on `${PES2_PORT:-8088}`. Routes `/api/` to the API gateway and `/` to the client. Hardened with `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, and tmpfs mounts.
+- **`client` (Web Studio):** Internal static asset server serving production-compiled React 18 bundles, completely off public interfaces.
+- **`api-gateway` (Python HTTP):** Translates incoming HTTP REST and SSE requests to internal gRPC calls against the worker daemon.
+- **`worker-daemon` (Python gRPC):** Core execution supervisor managing isolated ephemeral cgroup sandboxes and admission control.
+- **`db-postgres` (PostgreSQL 16):** Disposable database sandbox configured with unprivileged runner role (`pes2_runner`) and revoked file I/O primitives.
+
+### Quickstart Deployment
+```bash
+# 1. Create your local environment configuration
+cp .env.example .env
+
+# 2. Build and launch all services in detached mode
+docker compose up -d
+
+# 3. Verify deployment health
+curl -s http://localhost:8088/api/health
+
+# 4. View running services and health status
+docker compose ps
+```
+
+### Running Automated Test Suites
+```bash
+# Run full pytest suite (including Gateway, E2E runtimes, and Load concurrency tests)
+pytest
+
+# Run focused Phase 9 end-to-end and load verification
+pytest tests/test_gateway.py tests/test_e2e_runtimes.py tests/test_load_concurrency.py
+
+# Run sandbox seccomp profile unit test harness
+cd sandbox && make test
+```
+
+### Clean Teardown
+```bash
+docker compose down -v
+```
