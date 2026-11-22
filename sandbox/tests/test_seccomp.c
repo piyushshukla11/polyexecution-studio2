@@ -1505,6 +1505,184 @@ static void action_elixir_sched_setscheduler_blocked(void) {
     sched_setscheduler(0, SCHED_FIFO, &param);
 }
 
+/* Actions for SECCOMP_PROFILE_CSHARP */
+static void action_csharp_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_csharp_poll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct pollfd pfd = {.fd = -1, .events = POLLIN, .revents = 0};
+    if (poll(&pfd, 1, 0) < 0) _exit(3);
+}
+
+static void action_csharp_tgkill(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    if (syscall(SYS_tgkill, getpid(), gettid(), 0) != 0) _exit(3);
+}
+
+static void action_strict_tgkill_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    syscall(SYS_tgkill, getpid(), gettid(), 0);
+}
+
+static void action_csharp_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = (int)syscall(SYS_epoll_create1, 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_strict_epoll_create1_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    syscall(SYS_epoll_create1, 0);
+}
+
+static void action_csharp_sched_setaffinity_self(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) _exit(4);
+}
+
+static void action_csharp_sched_setaffinity_other_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(0, &set);
+    sched_setaffinity(1, sizeof(set), &set);
+}
+
+static void action_strict_sched_setaffinity_killed(void) {
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    sched_setaffinity(0, sizeof(set), &set);
+}
+
+static void action_csharp_get_mempolicy(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int mode = 0;
+    (void)syscall(SYS_get_mempolicy, &mode, NULL, 0, 0, 0);
+}
+
+static void action_csharp_memfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "csharp_jit", 0);
+    if (fd >= 0) close(fd);
+}
+
+static void action_csharp_flock(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int pfd[2];
+    if (pipe2(pfd, O_CLOEXEC) != 0) _exit(2);
+    (void)flock(pfd[0], LOCK_SH | LOCK_NB);
+    close(pfd[0]);
+    close(pfd[1]);
+}
+
+static void action_csharp_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "test_trunc", 0);
+    if (fd >= 0) {
+        (void)ftruncate(fd, 1024);
+        close(fd);
+    }
+}
+
+static void action_csharp_getsid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    (void)getsid(0);
+}
+
+static void action_csharp_sched_queries(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sched_param sp;
+    (void)sched_getparam(0, &sp);
+    (void)sched_getscheduler(0);
+    (void)sched_get_priority_max(SCHED_OTHER);
+    (void)sched_get_priority_min(SCHED_OTHER);
+}
+
+static void action_csharp_sched_setscheduler_other(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sched_param sp = {0};
+    if (sched_setscheduler(0, SCHED_OTHER, &sp) != 0) _exit(3);
+}
+
+static void action_csharp_sched_setscheduler_fifo_denied(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sched_param sp = {.sched_priority = 1};
+    int rc = sched_setscheduler(0, SCHED_FIFO, &sp);
+    if (rc == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_csharp_socket_eperm(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_csharp_connect_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sockaddr sa = {0};
+    connect(3, &sa, sizeof(sa));
+}
+
+static void action_csharp_bind_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sockaddr sa = {0};
+    bind(3, &sa, sizeof(sa));
+}
+
+static void action_csharp_listen_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    listen(3, 10);
+}
+
+static void action_csharp_accept_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    accept(3, NULL, NULL);
+}
+
+static void action_csharp_prctl_set_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "csharp_worker") != 0) _exit(3);
+}
+
+static void action_csharp_prctl_get_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    char buf[16] = {0};
+    if (prctl(PR_GET_NAME, buf) != 0) _exit(3);
+}
+
+static void action_csharp_prctl_dumpable_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_csharp_clone_user_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_csharp_unshare_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    syscall(SYS_unshare, CLONE_NEWUSER);
+}
+
+static void action_csharp_capset_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
+}
+
 int main(void) {
     printf("========================================================================\n");
     printf("Running Seccomp Profile Isolation & Permitted Syscall Unit Tests\n");
@@ -3046,9 +3224,233 @@ int main(void) {
         return 1;
     }
 
+    /* Test 177: sched_getaffinity permitted under C# profile */
+    if (expect_success(action_csharp_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 178: get_mempolicy permitted under C# profile */
+    if (expect_success(action_csharp_get_mempolicy)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits get_mempolicy without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on get_mempolicy!\n");
+        return 1;
+    }
+
+    /* Test 179: memfd_create permitted under C# profile */
+    if (expect_success(action_csharp_memfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits memfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on memfd_create!\n");
+        return 1;
+    }
+
+    /* Test 180: flock permitted under C# profile */
+    if (expect_success(action_csharp_flock)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits flock without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on flock!\n");
+        return 1;
+    }
+
+    /* Test 181: ftruncate permitted under C# profile */
+    if (expect_success(action_csharp_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits ftruncate without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 182: getsid permitted under C# profile */
+    if (expect_success(action_csharp_getsid)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits getsid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on getsid!\n");
+        return 1;
+    }
+
+    /* Test 183: sched_getparam / sched_getscheduler permitted under C# profile */
+    if (expect_success(action_csharp_sched_queries)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits scheduler query syscalls without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on scheduler query syscalls!\n");
+        return 1;
+    }
+
+    /* Test 184: sched_setscheduler(SCHED_OTHER) permitted under C# profile */
+    if (expect_success(action_csharp_sched_setscheduler_other)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits sched_setscheduler(SCHED_OTHER) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on sched_setscheduler(SCHED_OTHER)!\n");
+        return 1;
+    }
+
+    /* Test 185: sched_setscheduler(SCHED_FIFO) denied with EPERM under C# profile */
+    if (expect_success(action_csharp_sched_setscheduler_fifo_denied)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP denies sched_setscheduler(SCHED_FIFO) with EPERM (no SIGSYS)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted sched_setscheduler(SCHED_FIFO) or killed with SIGSYS!\n");
+        return 1;
+    }
+
+    /* Test 186: socket() returns EPERM under C# profile */
+    if (expect_success(action_csharp_socket_eperm)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP returns EPERM on socket() without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on socket() EPERM!\n");
+        return 1;
+    }
+
+    /* Test 187: connect() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_connect_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills connect() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted connect()!\n");
+        return 1;
+    }
+
+    /* Test 188: bind() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_bind_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills bind() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted bind()!\n");
+        return 1;
+    }
+
+    /* Test 189: listen() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_listen_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills listen() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted listen()!\n");
+        return 1;
+    }
+
+    /* Test 190: accept() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_accept_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills accept() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted accept()!\n");
+        return 1;
+    }
+
+    /* Test 191: prctl(PR_SET_NAME) permitted under C# profile */
+    if (expect_success(action_csharp_prctl_set_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 192: prctl(PR_GET_NAME) permitted under C# profile */
+    if (expect_success(action_csharp_prctl_get_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits prctl(PR_GET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on prctl(PR_GET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 193: prctl(PR_SET_DUMPABLE) killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_prctl_dumpable_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 194: CLONE_NEWUSER killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_clone_user_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 195: unshare killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_unshare_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted unshare()!\n");
+        return 1;
+    }
+
+    /* Test 196: capset killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_capset_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted capset()!\n");
+        return 1;
+    }
+
+    /* Test 197: sched_setaffinity(pid=0) permitted under C# profile */
+    if (expect_success(action_csharp_sched_setaffinity_self)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits sched_setaffinity(pid=0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on self sched_setaffinity!\n");
+        return 1;
+    }
+
+    /* Test 198: sched_setaffinity(nonzero pid) killed under C# profile */
+    if (expect_sigsys(action_csharp_sched_setaffinity_other_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills sched_setaffinity(nonzero pid) with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted sched_setaffinity(nonzero pid)!\n");
+        return 1;
+    }
+
+    /* Test 199: sched_setaffinity(pid=0) remains denied under strict profile */
+    if (expect_sigsys(action_strict_sched_setaffinity_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills sched_setaffinity(pid=0) with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted sched_setaffinity!\n");
+        return 1;
+    }
+
+    /* Test 200: poll is permitted under the C# profile */
+    if (expect_success(action_csharp_poll)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits poll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on poll!\n");
+        return 1;
+    }
+
+    /* Test 201: tgkill is permitted under the C# profile */
+    if (expect_success(action_csharp_tgkill)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits tgkill without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on tgkill!\n");
+        return 1;
+    }
+
+    /* Test 202: tgkill remains denied under strict profile */
+    if (expect_sigsys(action_strict_tgkill_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills tgkill with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted tgkill!\n");
+        return 1;
+    }
+
+    /* Test 203: epoll_create1 is permitted under the C# profile */
+    if (expect_success(action_csharp_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 204: epoll_create1 remains denied under strict profile */
+    if (expect_sigsys(action_strict_epoll_create1_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills epoll_create1 with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted epoll_create1!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 192 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 220 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

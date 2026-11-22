@@ -1,9 +1,10 @@
 """Runtime adapter registry and Tier 1 runtime adapters."""
 
+import glob
 import os
 import shutil
 import subprocess
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from engine.models import (
     CleanupSpec,
@@ -664,20 +665,83 @@ class RuntimeRegistry:
         )
         self.register(swift_adapter)
 
+        # C# (.NET) runtime (Phase 5 Slice 9)
+        dotnet_bin = "/usr/bin/dotnet" if os.path.exists("/usr/bin/dotnet") else shutil.which("dotnet") or "/usr/bin/dotnet"
+
+        # Concretely resolve Roslyn compiler assembly, reference targeting packs, and runtime configuration
+        ref_dir = "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref/10.0.13/ref/net10.0"
+        if not os.path.isdir(ref_dir):
+            ref_candidates = sorted(glob.glob("/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref/*/ref/net*"))
+            if ref_candidates:
+                ref_dir = ref_candidates[-1]
+
+        csc_dll = "/usr/share/dotnet/sdk/10.0.113/Roslyn/bincore/csc.dll"
+        if not os.path.exists(csc_dll):
+            csc_candidates = sorted(glob.glob("/usr/share/dotnet/sdk/*/Roslyn/bincore/csc.dll"))
+            if csc_candidates:
+                csc_dll = csc_candidates[-1]
+
+        runtime_config = "/usr/share/dotnet/sdk/10.0.113/dotnet.runtimeconfig.json"
+        if not os.path.exists(runtime_config):
+            cfg_candidates = sorted(glob.glob("/usr/share/dotnet/sdk/*/dotnet.runtimeconfig.json"))
+            if cfg_candidates:
+                runtime_config = cfg_candidates[-1]
+
+        concrete_ref_args: List[str] = []
+        if os.path.isdir(ref_dir):
+            for ref_file in sorted(os.listdir(ref_dir)):
+                if ref_file.endswith(".dll"):
+                    concrete_ref_args.append(f"-r:{os.path.join(ref_dir, ref_file)}")
+
+        csharp_compile_args = [
+            "exec",
+            csc_dll,
+            "-nologo",
+            "-target:exe",
+            "-out:/workspace/Solution.dll",
+            *concrete_ref_args,
+            "/workspace/Solution.cs",
+        ]
+
         csharp_adapter = RuntimeAdapter(
             id=LanguageId.CSHARP,
             display_name="C# (.NET)",
-            official_version=".NET 9.0 SDK",
-            installed_version=detect_tool_version("/usr/bin/dotnet"),
-            family=RuntimeFamily.INTERPRETED,
-            compile_spec=None,
-            execution_spec=ExecutionSpec(
-                runner_bin="/usr/bin/dotnet",
-                execution_args=[],
-                source_filename="Program.cs",
-                seccomp_profile=SeccompPolicyProfile.STRICT_NATIVE,
+            official_version=".NET 10 SDK",
+            installed_version=detect_tool_version(dotnet_bin),
+            family=RuntimeFamily.DOTNET,
+            compile_spec=CompileSpec(
+                compiler_bin=dotnet_bin,
+                compile_args=csharp_compile_args,
+                source_filename="Solution.cs",
+                artifact_output_name="Solution.dll",
+                compile_resource_limits=ResourceLimits(
+                    wall_ms=10000,
+                    cpu_ms=5000,
+                    memory_kb=262144,
+                    pids=64,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.CSHARP,
             ),
-            seccomp_policy=SeccompPolicyProfile.STRICT_NATIVE,
+            execution_spec=ExecutionSpec(
+                runner_bin=dotnet_bin,
+                execution_args=[
+                    "exec",
+                    "--runtimeconfig",
+                    runtime_config,
+                    "/workspace/Solution.dll",
+                ],
+                source_filename="Solution.cs",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=2000,
+                    memory_kb=131072,
+                    pids=32,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.CSHARP,
+            ),
+            seccomp_policy=SeccompPolicyProfile.CSHARP,
             cleanup_spec=CleanupSpec(),
         )
         self.register(csharp_adapter)

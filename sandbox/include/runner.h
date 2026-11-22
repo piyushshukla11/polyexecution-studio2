@@ -60,7 +60,8 @@ typedef enum {
     SECCOMP_PROFILE_DART = 8,
     SECCOMP_PROFILE_RACKET = 9,
     SECCOMP_PROFILE_ERLANG = 10,
-    SECCOMP_PROFILE_ELIXIR = 11
+    SECCOMP_PROFILE_ELIXIR = 11,
+    SECCOMP_PROFILE_CSHARP = 12
 } seccomp_profile_t;
 
 typedef struct {

@@ -3,7 +3,9 @@
 
 #include <errno.h>
 #include <linux/sched.h>
+#include <sched.h>
 #include <seccomp.h>
+#include <signal.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
 
@@ -34,7 +36,8 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
         profile != SECCOMP_PROFILE_DART &&
         profile != SECCOMP_PROFILE_RACKET &&
         profile != SECCOMP_PROFILE_ERLANG &&
-        profile != SECCOMP_PROFILE_ELIXIR) {
+        profile != SECCOMP_PROFILE_ELIXIR &&
+        profile != SECCOMP_PROFILE_CSHARP) {
         errno = EINVAL;
         return -1;
     }
@@ -601,6 +604,115 @@ int seccomp_apply_profile(seccomp_profile_t profile) {
 
         /*
          * Restrict prctl strictly to PR_SET_NAME and PR_GET_NAME:
+         * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_SET_NAME)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,
+                             SCMP_A0(SCMP_CMP_EQ, PR_GET_NAME)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (profile == SECCOMP_PROFILE_CSHARP) {
+        /*
+         * C# (.NET Core / CoreCLR & Roslyn csc.dll compiler) permissions:
+         * - sched_getaffinity: CPU topology awareness for ThreadPool and CoreCLR GC sizing
+         * - get_mempolicy: NUMA memory policy detection for CoreCLR GC allocation
+         * - memfd_create: anonymous memory descriptors for JIT compilation buffers
+         * - flock: advisory file locking during assembly compilation and metadata extraction
+         * - ftruncate: output file size management during assembly emission
+         * - getsid: session identity inspection
+         * - sched_getparam / sched_getscheduler / sched_get_priority_max / sched_get_priority_min:
+         *   ThreadPool worker scheduling policy queries
+         * - wait4 / waitid: sub-process and helper status reaping
+         * - getrusage: process resource consumption accounting
+         * - poll: descriptor polling used by CoreCLR's synchronization manager
+         * - epoll_create / epoll_create1 / epoll_ctl / epoll_wait / epoll_pwait / epoll_pwait2:
+         *   CoreCLR and System.Net.Sockets asynchronous event loop polling
+         */
+        const int csharp_allowed[] = {
+            SCMP_SYS(sched_getaffinity),
+            SCMP_SYS(get_mempolicy),
+            SCMP_SYS(memfd_create),
+            SCMP_SYS(flock),
+            SCMP_SYS(ftruncate),
+            SCMP_SYS(getsid),
+            SCMP_SYS(sched_getparam),
+            SCMP_SYS(sched_getscheduler),
+            SCMP_SYS(sched_get_priority_max),
+            SCMP_SYS(sched_get_priority_min),
+            SCMP_SYS(wait4),
+            SCMP_SYS(waitid),
+            SCMP_SYS(getrusage),
+            SCMP_SYS(poll),
+            SCMP_SYS(epoll_create),
+            SCMP_SYS(epoll_create1),
+            SCMP_SYS(epoll_ctl),
+            SCMP_SYS(epoll_wait),
+            SCMP_SYS(epoll_pwait),
+            SCMP_SYS(epoll_pwait2)
+        };
+        for (size_t i = 0; i < sizeof(csharp_allowed) / sizeof(csharp_allowed[0]); ++i) {
+            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, csharp_allowed[i], 0) < 0) {
+                seccomp_release(ctx);
+                errno = EINVAL;
+                return -1;
+            }
+        }
+
+        /*
+         * CoreCLR pins its own worker threads during initialization. pid == 0
+         * targets only the calling thread; attempts to change another task's
+         * affinity remain default-denied.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(sched_setaffinity), 1,
+                             SCMP_A0(SCMP_CMP_EQ, 0)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Permit tgkill strictly for SIGABRT (signal 6) to allow CoreCLR PAL abort()
+         * on unhandled exceptions and runtime assertions to terminate cleanly.
+         * Other signals remain default-denied and kill the process with SIGSYS.
+         */
+        /*
+         * Permit tgkill for CoreCLR PAL abort() on unhandled exceptions (SIGABRT)
+         * and GC thread suspension / activation injection across worker threads (SIGRTMIN).
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(tgkill), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Restrict sched_setscheduler strictly to SCHED_OTHER (0) for thread pool workers.
+         * Any non-SCHED_OTHER policy (such as real-time SCHED_FIFO or SCHED_RR) returns EPERM.
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(sched_setscheduler), 1,
+                             SCMP_A1(SCMP_CMP_EQ, SCHED_OTHER)) < 0 ||
+            seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(sched_setscheduler), 1,
+                             SCMP_A1(SCMP_CMP_NE, SCHED_OTHER)) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Return EPERM for socket() so runtime networking probes fall back gracefully.
+         * Active network operations (connect, bind, listen, accept) remain default-denied (SIGSYS).
+         */
+        if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 0) < 0) {
+            seccomp_release(ctx);
+            errno = EINVAL;
+            return -1;
+        }
+
+        /*
+         * Restrict prctl strictly to PR_SET_NAME and PR_GET_NAME for ThreadPool naming:
          * Any other option (including PR_SET_DUMPABLE) is denied by default and kills the process with SIGSYS.
          */
         if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prctl), 1,

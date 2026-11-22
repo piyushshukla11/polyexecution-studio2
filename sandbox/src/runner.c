@@ -119,7 +119,7 @@ static int create_rootfs(const char *rootfs) {
         int n = snprintf(path, sizeof(path), "%s/%s", rootfs, dirs[i]);
         if (n < 0 || (size_t)n >= sizeof(path) || make_dir(path, 0755) != 0) return -1;
     }
-    const char *files[] = {"etc/ld.so.cache", "dev/null"};
+    const char *files[] = {"etc/ld.so.cache", "dev/null", "dev/urandom"};
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
         int n = snprintf(path, sizeof(path), "%s/%s", rootfs, files[i]);
         if (n < 0 || (size_t)n >= sizeof(path)) { errno = ENAMETOOLONG; return -1; }
@@ -174,11 +174,14 @@ static int setup_mounts(const struct child_context *ctx) {
     n = snprintf(target, sizeof(target), "%s/dev/null", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/dev/null", target, 0) != 0) return -1;
 
+    n = snprintf(target, sizeof(target), "%s/dev/urandom", ctx->rootfs);
+    if (n < 0 || (size_t)n >= sizeof(target) || bind_mount("/dev/urandom", target, 0) != 0) return -1;
+
     n = snprintf(target, sizeof(target), "%s/proc", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target) ||
         mount("proc", target, "proc",
               MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC,
-              "hidepid=2,subset=pid") != 0) return -1;
+              "hidepid=2") != 0) return -1;
 
     n = snprintf(target, sizeof(target), "%s/tmp", ctx->rootfs);
     if (n < 0 || (size_t)n >= sizeof(target) ||
@@ -209,9 +212,9 @@ static int apply_child_limits(const runner_config_t *config) {
     struct rlimit limit;
     limit.rlim_cur = limit.rlim_max = (rlim_t)((config->cpu_timeout_ms + 999U) / 1000U + 1U);
     if (setrlimit(RLIMIT_CPU, &limit) != 0) return -1;
-    limit.rlim_cur = limit.rlim_max = 1024U * 1024U;
+    limit.rlim_cur = limit.rlim_max = 64U * 1024U * 1024U;
     if (setrlimit(RLIMIT_FSIZE, &limit) != 0) return -1;
-    limit.rlim_cur = limit.rlim_max = 64;
+    limit.rlim_cur = limit.rlim_max = 256;
     if (setrlimit(RLIMIT_NOFILE, &limit) != 0) return -1;
     limit.rlim_cur = limit.rlim_max = 0;
     if (setrlimit(RLIMIT_CORE, &limit) != 0) return -1;
@@ -278,9 +281,36 @@ static int child_main(void *opaque) {
         "LANG=C",
         "LD_LIBRARY_PATH=/usr/lib/jvm/default/lib:/usr/lib/jvm/default/lib/server",
         "ERL_ROOTDIR=/usr/lib/erlang",
+        "DOTNET_EnableDiagnostics=0",
+        "DOTNET_NOLOGO=1",
+        "DOTNET_CLI_TELEMETRY_OPTOUT=1",
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1",
+        "DOTNET_MULTILEVEL_LOOKUP=0",
+        "DOTNET_ROOT=/usr/share/dotnet",
         NULL
     };
-    execve(ctx->config->target_bin, ctx->config->target_argv, safe_env);
+    char *csharp_safe_env[] = {
+        "PATH=/usr/bin:/bin",
+        "HOME=/workspace",
+        "TMPDIR=/tmp",
+        "LANG=C",
+        "LD_LIBRARY_PATH=/usr/lib/jvm/default/lib:/usr/lib/jvm/default/lib/server",
+        "ERL_ROOTDIR=/usr/lib/erlang",
+        "DOTNET_EnableDiagnostics=0",
+        "DOTNET_NOLOGO=1",
+        "DOTNET_CLI_TELEMETRY_OPTOUT=1",
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1",
+        "DOTNET_MULTILEVEL_LOOKUP=0",
+        "DOTNET_ROOT=/usr/share/dotnet",
+        "DOTNET_PROCESSOR_COUNT=2",
+        "DOTNET_gcServer=0",
+        NULL
+    };
+    if (ctx->config->seccomp_profile == SECCOMP_PROFILE_CSHARP) {
+        execve(ctx->config->target_bin, ctx->config->target_argv, csharp_safe_env);
+    } else {
+        execve(ctx->config->target_bin, ctx->config->target_argv, safe_env);
+    }
     child_error(ctx->exec_error_write, errno);
     return 125;
 }
@@ -729,6 +759,7 @@ int main(int argc, char **argv) {
             else if (strcmp(prof, "racket") == 0) config.seccomp_profile = SECCOMP_PROFILE_RACKET;
             else if (strcmp(prof, "erlang") == 0) config.seccomp_profile = SECCOMP_PROFILE_ERLANG;
             else if (strcmp(prof, "elixir") == 0) config.seccomp_profile = SECCOMP_PROFILE_ELIXIR;
+            else if (strcmp(prof, "csharp") == 0 || strcmp(prof, "dotnet") == 0) config.seccomp_profile = SECCOMP_PROFILE_CSHARP;
             else {
                 fprintf(stderr, "runner: invalid or unsupported seccomp profile '%s'\n", prof);
                 return STATUS_SANDBOX_ERROR;
@@ -758,6 +789,6 @@ int main(int argc, char **argv) {
     return status;
 
 usage:
-    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart|racket|erlang|elixir] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [--wall-ms N] [--cpu-ms N] [--memory-kb N] [--pids N] [--seccomp-profile strict|compiler|python|bash|jvm|ruby|node|php|dart|racket|erlang|elixir|csharp] [--cgroup-root PATH] --workspace PRIVATE_DIR -- ABSOLUTE_TARGET [ARGS...]\n", argv[0]);
     return STATUS_SANDBOX_ERROR;
 }

@@ -39,6 +39,10 @@ class ArtifactCreatingMockRunner(MockSandboxRunner):
                 out_path = os.path.join(workspace, "Solution.js")
                 with open(out_path, "w") as f:
                     f.write('"use strict";\n')
+            elif any("csc" in str(arg) for arg in target_argv) or target_bin.endswith("dotnet"):
+                out_path = os.path.join(workspace, "Solution.dll")
+                with open(out_path, "wb") as f:
+                    f.write(b"MZ\x90\x00")
         return res
 
 
@@ -836,6 +840,9 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertNotIn(Milestone.COMPILING, milestone_names)
 
     def test_dart_truthful_milestones_no_compiling(self) -> None:
+        dart_adapter = self.registry.get(LanguageId.DART)
+        if not dart_adapter or not dart_adapter.is_installed:
+            self.skipTest("Dart toolchain not installed on host or /opt/dart-sdk inaccessible")
         self.runner.queue_result(
             RunnerResult("OK", 0, 0, 500, 480, 122880, "hello dart\n", "")
         )
@@ -864,6 +871,9 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.DART)
 
     def test_dart_syntax_or_runtime_error_milestone(self) -> None:
+        dart_adapter = self.registry.get(LanguageId.DART)
+        if not dart_adapter or not dart_adapter.is_installed:
+            self.skipTest("Dart toolchain not installed on host or /opt/dart-sdk inaccessible")
         self.runner.queue_result(
             RunnerResult("RUNTIME_ERROR", 254, 0, 400, 390, 118784, "", "Error: Can't find ')' to match '('\n")
         )
@@ -1133,11 +1143,135 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(milestone_names, expected)
         self.assertEqual(len(self.runner.invocations), 2)
 
+    def test_csharp_success_milestones(self) -> None:
+        # Mock compilation and execution success
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 105000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 100, 80, 35000, "hello csharp pipeline\n", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-ok",
+            language_id=LanguageId.CSHARP,
+            source_code='using System; class Solution { static void Main() { Console.WriteLine("hello csharp pipeline"); } }\n',
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.stdout, "hello csharp pipeline\n")
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+
+        # Stage 1: Compilation invocation
+        compile_inv = self.runner.invocations[0]
+        self.assertTrue(compile_inv["target_bin"].endswith("dotnet"))
+        self.assertIn("-out:/workspace/Solution.dll", compile_inv["target_argv"])
+        self.assertIn("/workspace/Solution.cs", compile_inv["target_argv"])
+        self.assertEqual(compile_inv["seccomp_profile"], SeccompPolicyProfile.CSHARP)
+        self.assertEqual(compile_inv["limits"].memory_kb, 262144)
+        self.assertEqual(compile_inv["limits"].pids, 64)
+
+        # Stage 2: Execution invocation
+        exec_inv = self.runner.invocations[1]
+        self.assertTrue(exec_inv["target_bin"].endswith("dotnet"))
+        self.assertIn("--runtimeconfig", exec_inv["target_argv"])
+        self.assertIn("/workspace/Solution.dll", exec_inv["target_argv"])
+        self.assertEqual(exec_inv["seccomp_profile"], SeccompPolicyProfile.CSHARP)
+        self.assertEqual(exec_inv["limits"].memory_kb, 131072)
+        self.assertEqual(exec_inv["limits"].pids, 32)
+
+    def test_csharp_compile_error_truthful_and_fail_closed(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 1500, 1400, 105000, "", "Solution.cs(1,1): error CS1002: ; expected\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-compile-err",
+            language_id=LanguageId.CSHARP,
+            source_code="class Solution { broken syntax }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("error CS1002", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.COMPILE_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.RUNNING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+
+    def test_csharp_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 105000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 100, 80, 35000, "", "Unhandled exception. System.DivideByZeroException: Attempted to divide by zero.\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-runtime-err",
+            language_id=LanguageId.CSHARP,
+            source_code="using System; class Solution { static void Main() { int a = 1, b = 0; int c = a / b; } }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("DivideByZeroException", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+
+    def test_csharp_execution_memory_limit_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 1500, 1400, 105000, "", "")
+        )
+        self.runner.queue_result(
+            RunnerResult("MEMORY_LIMIT", 137, 9, 200, 150, 131072, "", "Process killed by cgroup OOM killer\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-csharp-oom",
+            language_id=LanguageId.CSHARP,
+            source_code="using System; class Solution { static void Main() {} }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(res.signal, 9)
+        self.assertGreaterEqual(res.peak_memory_kb, 131072)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.COMPILING,
+            Milestone.RUNNING,
+            Milestone.MEMORY_LIMIT,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertEqual(len(self.runner.invocations), 2)
+        self.assertEqual(self.runner.invocations[1]["limits"].memory_kb, 131072)
+
     def test_unsupported_phase5_runtimes_fail_closed(self) -> None:
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.CSHARP,
         ]
         for lang_id in unsupported:
             req = ExecutionRequest(
@@ -2127,6 +2261,161 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertIn("NETWORK_DENIED_EPERM", evil_res.stdout)
 
         # 6. Verify zero cgroup leftovers
+        leftovers = [
+            d for d in os.listdir(cgroup_root)
+            if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
+        ]
+        self.assertEqual(len(leftovers), 0)
+
+    def test_live_csharp_execution_with_native_runner(self) -> None:
+        import subprocess
+        from engine.runner import NativeSandboxRunner
+
+        if not os.path.exists("sandbox/pes2-runner"):
+            self.skipTest("sandbox/pes2-runner not built")
+        try:
+            res = subprocess.run(["unshare", "-U", "true"], capture_output=True)
+            if res.returncode != 0:
+                self.skipTest("User namespaces restricted in current environment")
+        except FileNotFoundError:
+            self.skipTest("unshare binary not found")
+
+        cgroup_root = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        if not os.path.exists(cgroup_root):
+            self.skipTest("Delegated cgroup root not found")
+
+        csharp_adapter = self.registry.get(LanguageId.CSHARP)
+        if not csharp_adapter or not csharp_adapter.is_installed:
+            self.skipTest("C# (.NET) not installed on host")
+
+        runner = NativeSandboxRunner(runner_path="sandbox/pes2-runner", cgroup_root=cgroup_root)
+        pipeline = ExecutionPipeline(self.registry, runner)
+
+        # 1. Normal compilation and execution
+        cs_src = (
+            "using System;\n"
+            "class Solution {\n"
+            "    static void Main() {\n"
+            "        Console.WriteLine(\"CSHARP_LIVE_SUCCESS\");\n"
+            "    }\n"
+            "}\n"
+        )
+        ok_req = ExecutionRequest(
+            request_id="req-live-csharp-ok",
+            language_id=LanguageId.CSHARP,
+            source_code=cs_src,
+        )
+        ok_res = pipeline.execute(ok_req)
+        self.assertEqual(
+            ok_res.final_status,
+            Milestone.COMPLETED,
+            "C# compile/execute failed: "
+            f"exit={ok_res.exit_code} signal={ok_res.signal} "
+            f"peak_memory_kb={ok_res.peak_memory_kb} "
+            f"stdout={ok_res.stdout!r} stderr={ok_res.stderr!r} "
+            f"compile_output={ok_res.compile_output!r}",
+        )
+        self.assertEqual(ok_res.exit_code, 0)
+        self.assertIn("CSHARP_LIVE_SUCCESS", ok_res.stdout)
+
+        # 2. Compilation error
+        syntax_err_req = ExecutionRequest(
+            request_id="req-live-csharp-syntax-err",
+            language_id=LanguageId.CSHARP,
+            source_code="class Solution { broken syntax here }\n",
+        )
+        syntax_err_res = pipeline.execute(syntax_err_req)
+        self.assertEqual(syntax_err_res.final_status, Milestone.COMPILE_ERROR)
+        self.assertEqual(syntax_err_res.exit_code, 1)
+
+        # 3. Runtime exception
+        crash_req = ExecutionRequest(
+            request_id="req-live-csharp-crash",
+            language_id=LanguageId.CSHARP,
+            source_code=(
+                "using System;\n"
+                "class Solution {\n"
+                "    static void Main() {\n"
+                "        throw new InvalidOperationException(\"CSHARP_CRASH_TEST\");\n"
+                "    }\n"
+                "}\n"
+            ),
+        )
+        crash_res = pipeline.execute(crash_req)
+        self.assertEqual(crash_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertIn(crash_res.signal, (6, 11))
+        self.assertIn("CSHARP_CRASH_TEST", crash_res.stderr)
+
+        # 4. Timeout
+        to_req = ExecutionRequest(
+            request_id="req-live-csharp-timeout",
+            language_id=LanguageId.CSHARP,
+            source_code=(
+                "using System;\n"
+                "using System.Threading;\n"
+                "class Solution {\n"
+                "    static void Main() {\n"
+                "        Thread.Sleep(10000);\n"
+                "    }\n"
+                "}\n"
+            ),
+            custom_limits=ResourceLimits(wall_ms=500, cpu_ms=500, memory_kb=131072, pids=32, max_output_bytes=65536),
+        )
+        to_res = pipeline.execute(to_req)
+        self.assertEqual(to_res.final_status, Milestone.TIMEOUT)
+
+        # 5. Memory limit enforcement at adapter default (128 MiB)
+        oom_src = (
+            "using System;\n"
+            "using System.Collections.Generic;\n"
+            "class Solution {\n"
+            "    static void Main() {\n"
+            "        var chunks = new List<byte[]>();\n"
+            "        while (true) {\n"
+            "            var chunk = new byte[10000000];\n"
+            "            for (int i = 0; i < chunk.Length; i += 4096) chunk[i] = 1;\n"
+            "            chunks.Add(chunk);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        oom_req = ExecutionRequest(
+            request_id="req-live-csharp-oom-default-128mb",
+            language_id=LanguageId.CSHARP,
+            source_code=oom_src,
+        )
+        oom_res = pipeline.execute(oom_req)
+        self.assertEqual(oom_res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(oom_res.signal, 9)
+        self.assertGreaterEqual(oom_res.peak_memory_kb, 131072)
+
+        # 6. Network denial (socket() returns EPERM)
+        evil_src = (
+            "using System;\n"
+            "using System.Net.Sockets;\n"
+            "class Solution {\n"
+            "    static void Main() {\n"
+            "        try {\n"
+            "            var s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);\n"
+            "            s.Connect(\"127.0.0.1\", 80);\n"
+            "        } catch (Exception ex) {\n"
+            "            Console.WriteLine($\"NETWORK_DENIED_{ex.GetType().Name}\");\n"
+            "            Environment.Exit(42);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        evil_req = ExecutionRequest(
+            request_id="req-live-csharp-network-denied",
+            language_id=LanguageId.CSHARP,
+            source_code=evil_src,
+        )
+        evil_res = pipeline.execute(evil_req)
+        self.assertEqual(evil_res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(evil_res.exit_code, 42)
+        self.assertIn("NETWORK_DENIED", evil_res.stdout)
+
+        # 7. Verify zero cgroup leftovers
         leftovers = [
             d for d in os.listdir(cgroup_root)
             if d.startswith("pes2-") and os.path.isdir(os.path.join(cgroup_root, d))
