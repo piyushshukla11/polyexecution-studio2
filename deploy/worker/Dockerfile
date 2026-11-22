@@ -14,16 +14,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libseccomp-dev \
     libseccomp2 \
     openjdk-21-jdk-headless \
+    curl \
     python3 \
     python3-pip \
     python3-setuptools \
     python3-wheel \
+    python3-pandas \
+    python3-numpy \
     nodejs \
     ruby-full \
+    php-cli \
     bash \
     sqlite3 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install .NET 10 SDK aligning with host runtime registry (.NET 10 SDK)
+RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 10.0 --install-dir /usr/share/dotnet \
+    && ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 
 # Install Python requirements
 COPY requirements.txt ./

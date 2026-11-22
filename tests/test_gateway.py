@@ -183,12 +183,12 @@ class TestApiGateway(unittest.TestCase):
             self.assertIn("COMPLETED", content)
 
     def test_cors_preflight(self) -> None:
-        """OPTIONS request should return 204 with CORS headers."""
+        """OPTIONS request from allowed origin should return 204 with CORS headers."""
         url = f"{self.base_url}/api/execute"
-        req = urllib.request.Request(url, method="OPTIONS")
+        req = urllib.request.Request(url, headers={"Origin": "http://127.0.0.1:8088"}, method="OPTIONS")
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, HTTPStatus.NO_CONTENT)
-            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "http://127.0.0.1:8088")
             self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
 
     def test_not_found(self) -> None:

@@ -6,10 +6,15 @@ services:
     container_name: pes2-reverse-proxy
     restart: unless-stopped
     ports:
-      - "${PES2_PORT:-8088}:80"
+      # Binds strictly to loopback (127.0.0.1) by default to prevent exposing execution on public interfaces
+      - "${PES2_BIND_HOST:-127.0.0.1}:${PES2_PORT:-8088}:80"
     networks:
       - pes2-public
       - pes2-internal
+    environment:
+      - PES2_BIND_HOST=${PES2_BIND_HOST:-127.0.0.1}
+      - PES2_API_KEY=${PES2_API_KEY:-}
+      - PES2_INSECURE_NO_AUTH=${PES2_INSECURE_NO_AUTH:-0}
     depends_on:
       client:
         condition: service_healthy
@@ -50,6 +55,8 @@ services:
     restart: unless-stopped
     networks:
       - pes2-internal
+    environment:
+      - VITE_PES2_API_KEY=${PES2_API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/health || exit 1"]
       interval: 10s
@@ -84,8 +91,12 @@ services:
       - PYTHONUNBUFFERED=1
       - PES2_GATEWAY_HOST=0.0.0.0
       - PES2_GATEWAY_PORT=8000
+      - PES2_ALLOW_INTERNAL_NETWORKING=1
+      - PES2_BIND_HOST=${PES2_BIND_HOST:-127.0.0.1}
       - PES2_DAEMON_ADDR=worker-daemon:50051
       - PES2_TIMEOUT_SEC=${PES2_GATEWAY_TIMEOUT_SEC:-30.0}
+      - PES2_API_KEY=${PES2_API_KEY:-}
+      - PES2_REQUIRE_AUTH=${PES2_REQUIRE_AUTH:-0}
     depends_on:
       worker-daemon:
         condition: service_healthy
@@ -116,55 +127,28 @@ services:
       - PES2_HOST=0.0.0.0
       - PES2_PORT=50051
       - PES2_ALLOW_INTERNAL_NETWORKING=1
+      - PES2_CGROUP_ROOT=/sys/fs/cgroup/pes2
       - PES2_WORKERS=${PES2_DAEMON_WORKERS:-8}
       - PES2_CAPACITY=${PES2_DAEMON_CAPACITY:-16}
       - PES2_MEMORY_MB=${PES2_DAEMON_MEMORY_MB:-1024}
+    volumes:
+      - ${PES2_CGROUP_ROOT:-/sys/fs/cgroup/pes2}:/sys/fs/cgroup/pes2:rw
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('127.0.0.1', 50051)); s.close()"]
       interval: 10s
       timeout: 3s
       start_period: 5s
       retries: 3
-    security_opt:
-      - no-new-privileges:true
     deploy:
       resources:
         limits:
           cpus: "2.0"
           memory: 2048M
 
-  db-postgres:
-    image: postgres:16-alpine
-    container_name: pes2-postgres
-    restart: unless-stopped
-    networks:
-      - pes2-internal
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER:-pes2_admin}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pes2_dev_password_change_in_production}
-      - POSTGRES_DB=${POSTGRES_DB:-pes2_sandbox}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 3s
-      start_period: 5s
-      retries: 3
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
-
 networks:
   pes2-public:
     driver: bridge
   pes2-internal:
     driver: bridge
-
-volumes:
-  postgres-data:

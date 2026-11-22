@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { ExecutionResult, TabularData } from '../types/execution';
+import { ExecutionResult, TabularData, MilestoneEvent } from '../types/execution';
 import { TabularPreview } from './TabularPreview';
 import { BrowserPreview } from './BrowserPreview';
 
@@ -8,6 +8,8 @@ interface OutputTerminalProps {
   isRunning: boolean;
   selectedLanguageId: string;
   sourceCode: string;
+  onMilestone?: (event: MilestoneEvent) => void;
+  onResult?: (result: ExecutionResult) => void;
 }
 
 export const OutputTerminal: React.FC<OutputTerminalProps> = ({
@@ -15,6 +17,8 @@ export const OutputTerminal: React.FC<OutputTerminalProps> = ({
   isRunning,
   selectedLanguageId,
   sourceCode,
+  onMilestone,
+  onResult,
 }) => {
   const [activeTab, setActiveTab] = useState<'stdout' | 'stderr' | 'tabular' | 'preview'>('stdout');
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
@@ -158,6 +162,8 @@ export const OutputTerminal: React.FC<OutputTerminalProps> = ({
               sourceCode={sourceCode}
               languageId={selectedLanguageId as 'react' | 'vanilla_js'}
               onConsoleOutput={(log) => setLiveLogs((prev) => [...prev, log])}
+              onMilestone={onMilestone}
+              onResult={onResult}
             />
             {liveLogs.length > 0 && (
               <div className="live-logs-drawer">

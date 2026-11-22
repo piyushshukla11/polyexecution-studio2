@@ -509,8 +509,8 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.source_filename, "Solution.jsx")
         self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.NODE)
         self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
-        self.assertTrue(adapter.is_installed)
-        self.assertIn("sandbox=\"allow-scripts\"", adapter.installed_version)
+        self.assertFalse(adapter.is_installed)
+        self.assertIn("Browser-only runtime", adapter.installed_version)
 
     def test_vanilla_js_adapter_contract(self) -> None:
         adapter = self.registry.get(LanguageId.VANILLA_JS)
@@ -523,8 +523,8 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.source_filename, "Solution.js")
         self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.NODE)
         self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
-        self.assertTrue(adapter.is_installed)
-        self.assertIn("sandbox=\"allow-scripts\"", adapter.installed_version)
+        self.assertFalse(adapter.is_installed)
+        self.assertIn("Browser-only runtime", adapter.installed_version)
 
     def test_all_28_environments_registered_in_inventory(self) -> None:
         all_langs = list(LanguageId)
