@@ -191,6 +191,43 @@ The remote execution worker daemon mediates between external orchestration/API c
     - Deterministic ephemeral cleanup: guaranteed cleanup of Python harness processes, workspace directories, and in-memory structures in `ExecutionPipeline` on completion, error, timeout, or cancellation.
     - Truthful unsupported database status: PostgreSQL (server daemon uninstalled), MySQL (uninstalled), MS SQL Server (uninstalled), and Oracle (uninstalled) are truthfully registered as unsupported and fail closed.
 
+### Data Science & Browser Frontend Runtimes Architecture (Phase 7)
+11. **Pandas Isolated Execution & Structured Tabular Serialization:**
+    - Single-stage direct execution via `/usr/bin/python3 -I -c "<pandas_harness_script>" /workspace/solution.py` within `SECCOMP_PROFILE_PYTHON`.
+    - Truthful milestone emissions: `ACCEPTED` -> `RUNNING` -> `COMPLETED` / `RUNTIME_ERROR` (never emits synthetic `COMPILING` milestones).
+    - Pre-imported global data science structures: user solutions execute with `pd`, `pandas`, `np`, and `numpy` pre-injected into an isolated namespace, supporting idiomatic LeetCode code patterns without boilerplate import lines.
+    - Result inspection and structured JSON serialization:
+      - Automatically detects evaluation outputs by inspecting explicit variables (`result`, `res`, `df`, `output`), callable entrypoints (`solution()`, `solve()`), or global DataFrame and Series instances.
+      - Serializes tabular outputs to structured JSON (`{"columns": [...], "rows": [...]}`).
+      - Type preservation: distinguishes integers, floating-point numbers, booleans, strings, ISO 8601 timestamps (`isoformat()`), and binary hex strings.
+      - Null handling: maps `None`, `np.nan`, and `pd.NA` explicitly to JSON `null`.
+      - Series serialization: converts `pd.Series` into single-column schema tables preserving series names.
+    - Measured resource bounds: 3,000 ms CPU timeout, 5,000 ms wall timeout, 256 MiB cgroup memory limit (`262144 KiB`) accommodating NumPy SIMD vectorization and Pandas memory allocations while preventing false OOM aborts, 16 PIDs limit, 64 KiB output cap.
+    - Honest toolchain reachability: detects host pandas and numpy installations truthfully, distinguishing system runtimes accessible inside the sandbox rootfs from user-path installations.
+
+12. **React and Browser JavaScript Client-Side Sandbox Architecture:**
+    - Architectural decision: Sandboxed Iframe vs Web Worker:
+      - Web Workers execute in background threads lacking DOM APIs (`document.createElement`, `window`, and React 18 `createRoot`). Web Workers cannot mount UI component trees or evaluate DOM mutations.
+      - Sandboxed Iframes provide real, native DOM rendering environments while kernel-enforcing web security boundaries via the HTML5 `sandbox` attribute and Content-Security-Policy headers.
+    - Zero-Trust Host Isolation Doctrine:
+      - Mandatory sandbox attribute: `sandbox="allow-scripts"` strictly without `allow-same-origin`.
+      - Opaque Origin Enforcement: Omitting `allow-same-origin` assigns the iframe an opaque unique origin (`origin: "null"`).
+      - Host Storage and Cookie Protection: Under W3C HTML5 specifications, cross-origin documents with opaque origins are completely denied access to `document.cookie`, `localStorage`, `sessionStorage`, and `indexedDB` (`SecurityError: Access is denied for this document`). Host studio authentication tokens, session cookies, and local state are completely protected from untrusted user code.
+      - Host DOM Protection: The opaque origin boundary prevents cross-origin DOM traversal (`SecurityError: Blocked a frame with origin "null" from accessing a cross-origin frame`). Untrusted code cannot read `window.parent.document` or mutate host elements.
+      - Containment: Strictly disallows `allow-top-navigation`, `allow-popups`, `allow-modals`, and `allow-forms`, preventing tab hijacking, alert/confirm UI spoofing, or phished form submissions.
+    - Restrictive Content Security Policy (CSP):
+      - Injected via `<meta http-equiv="Content-Security-Policy" content="...">`.
+      - Default deny (`default-src 'none'`) with strict network prohibition (`connect-src 'none'`), completely blocking outbound exfiltration via `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, and `navigator.sendBeacon`.
+    - Asynchronous PostMessage Protocol:
+      - Host studio coordinates with the iframe through a typed event protocol:
+        - `READY`: Iframe signals initialization completion.
+        - `CONSOLE`: Intercepts `console.log`, `console.info`, `console.warn`, `console.error` and forwards serialized arguments.
+        - `ERROR`: Captures unhandled runtime exceptions (`window.onerror`) and unhandled promise rejections.
+        - `MILESTONE`: Emits truthful milestone transitions (`RUNNING`, `COMPLETED`, `RUNTIME_ERROR`).
+        - `METRICS`: Emits performance telemetry (`wall_ms`, `dom_nodes`).
+    - Server-Side Syntax Verification:
+      - Backend adapter supports syntax verification via Node.js `--check` (`SECCOMP_PROFILE_NODE`) bounded under 128 MiB memory limit.
+
 ### Decision Rationale: Python `grpc.aio` Daemon vs Kotlin/Rust
 During Phase 3 architectural refinement, the worker daemon was implemented using Python `grpc.aio` rather than Kotlin or Rust:
 1. **Unified Memory Footprint:** A Kotlin daemon requires a persistent JVM runtime on the host consuming 150-300 MiB baseline RSS solely for RPC dispatch, competing with sandboxed compilations for host RAM.

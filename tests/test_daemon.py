@@ -91,6 +91,16 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertIn("dart", runtime_map)
         self.assertIn("racket", runtime_map)
         self.assertIn("erlang", runtime_map)
+        self.assertIn("pandas", runtime_map)
+        self.assertIn("react", runtime_map)
+        self.assertIn("vanilla_js", runtime_map)
+
+        # React and Vanilla JS verified installed client-side sandbox
+        self.assertTrue(runtime_map["react"].is_installed)
+        self.assertEqual(runtime_map["react"].display_name, "React")
+        self.assertTrue(runtime_map["vanilla_js"].is_installed)
+        self.assertEqual(runtime_map["vanilla_js"].display_name, "JavaScript (DOM)")
+        self.assertEqual(runtime_map["pandas"].display_name, "Pandas")
 
         # Bash, PHP, TypeScript, Dart, Racket, and Erlang verified installed
         self.assertTrue(runtime_map["bash"].is_installed)
@@ -831,6 +841,120 @@ class TestWorkerDaemon(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_RUNTIME_ERROR)
         self.assertEqual(result_response.exit_code, 1)
         self.assertIn("VACUUM INTO is disabled", result_response.stderr)
+
+    async def test_execute_stream_pandas_success(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        if not adapter or not adapter.is_installed:
+            # When toolchain is uninstalled or unavailable in sandbox rootfs, verify fail-closed
+            req = execution_pb2.ExecuteRequest(
+                request_id="req-daemon-pandas-fail",
+                language_id="pandas",
+                source_code="import pandas as pd\n",
+            )
+            call = self.stub.ExecuteStream(req)
+            milestones = []
+            result_response = None
+            while True:
+                resp = await call.read()
+                if resp is grpc.aio.EOF:
+                    break
+                if resp.HasField("milestone_event"):
+                    milestones.append(resp.milestone_event.milestone)
+                if resp.HasField("result"):
+                    result_response = resp.result
+            self.assertIn(execution_pb2.MILESTONE_SANDBOX_ERROR, milestones)
+            self.assertIsNotNone(result_response)
+            assert result_response is not None
+            self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_SANDBOX_ERROR)
+            return
+
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 120, 100, 45000, '{"columns": ["id", "val"], "rows": [[1, "data"]]}\n', "")
+        )
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-pandas",
+            language_id="pandas",
+            source_code="import pandas as pd\ndf = pd.DataFrame({'id': [1], 'val': ['data']})\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+        self.assertIn('"id"', result_response.stdout)
+        self.assertIn('"data"', result_response.stdout)
+
+    async def test_execute_stream_react_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 40, 30, 20000, "", "")
+        )
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-react",
+            language_id="react",
+            source_code="export default function App() { return <h1>Test</h1>; }\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
+
+    async def test_execute_stream_vanilla_js_success(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 40, 30, 20000, "", "")
+        )
+        req = execution_pb2.ExecuteRequest(
+            request_id="req-daemon-vjs",
+            language_id="vanilla_js",
+            source_code="root.innerHTML = '<p>Test</p>';\n",
+        )
+        call = self.stub.ExecuteStream(req)
+        milestones = []
+        result_response = None
+        while True:
+            resp = await call.read()
+            if resp is grpc.aio.EOF:
+                break
+            if resp.HasField("milestone_event"):
+                milestones.append(resp.milestone_event.milestone)
+            if resp.HasField("result"):
+                result_response = resp.result
+
+        self.assertIn(execution_pb2.MILESTONE_ACCEPTED, milestones)
+        self.assertIn(execution_pb2.MILESTONE_RUNNING, milestones)
+        self.assertIn(execution_pb2.MILESTONE_COMPLETED, milestones)
+        self.assertNotIn(execution_pb2.MILESTONE_COMPILING, milestones)
+        self.assertIsNotNone(result_response)
+        assert result_response is not None
+        self.assertEqual(result_response.final_status, execution_pb2.MILESTONE_COMPLETED)
 
 
 
