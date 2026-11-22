@@ -149,8 +149,19 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
 
 ### Phase 7: Data Science & Browser Frontend Runtimes
 - Target environments: **Pandas (Python 3 + Pandas/NumPy), React, Vanilla JavaScript (DOM)**.
-- Pandas: isolated Python runner with pre-imported data structures, memory thresholds, and DataFrame tabular serialization.
-- React / Web: client-side isolated worker or sandboxed iframe (`sandbox="allow-scripts"`) preventing host DOM access, cookie exfiltration, or cross-origin leakage.
+- Complete Pandas (`pandas`) framework runtime:
+  - Implemented single-stage isolated Python runner (`/usr/bin/python3 -I -c "<pandas_harness_script>" /workspace/solution.py`) with pre-imported data structures (`pd`, `pandas`, `np`, `numpy`).
+  - Robust structured DataFrame tabular result serialization schema (`{"columns": [...], "rows": [...]}`), preserving column headers, rows, primitive types (integers, floats, booleans, strings), ISO 8601 formatted timestamps/dates, byte hex sequences, and explicit null/NaN representation (`None`, `np.nan`, `pd.NA` -> `null`), with unified support for `pd.Series`.
+  - Automatic detection of DataFrame results: checks explicit variables (`result`, `res`, `df`, `output`), callable entrypoints (`def solve()`, `def solution()`), and global DataFrame instances.
+  - Measured resource limits: 256 MiB (`262144 KiB`) memory ceiling accommodating NumPy SIMD vectorization and Pandas C-extension allocations without false OOMs, 3,000 ms CPU timeout, 5,000 ms wall timeout, 16 PIDs limit, 64 KiB output cap.
+  - Native seccomp profile: reuses `SECCOMP_PROFILE_PYTHON` (profile 2) with zero Tier A modifications.
+  - Truthful host status reporting: truthful detection of pandas and numpy versions, honest reporting of user-path vs sandbox rootfs reachability.
+- Complete React 18 (`react`) and Vanilla JavaScript (`vanilla_js`) client-side browser sandbox architecture:
+  - Architectural evaluation of sandboxed worker vs sandboxed iframe: workers lack DOM APIs (`document.createElement`, `window`, and React 18 `createRoot`), whereas HTML5 sandboxed iframe (`sandbox="allow-scripts"`) provides full real DOM execution while enforcing complete isolation.
+  - Zero-trust host isolation: strictly prohibits `allow-same-origin` (forcing an opaque `null` origin, blocking access to host `document.cookie`, `localStorage`, `sessionStorage`, `indexedDB`, and host DOM), `allow-top-navigation`, `allow-popups`, `allow-modals`, and `allow-forms`.
+  - Content Security Policy (CSP): enforces `connect-src 'none'` to strictly block network exfiltration (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `navigator.sendBeacon`).
+  - Structured asynchronous postMessage protocol: `READY`, `CONSOLE` (proxying `console.log`, `info`, `warn`, `error`), `ERROR` (intercepting `window.onerror` and unhandled promise rejections), `MILESTONE` (`ACCEPTED`, `RUNNING`, `COMPLETED`, `RUNTIME_ERROR`), and `METRICS` (`wall_ms`, `dom_nodes`).
+  - Server-side syntax validation via Node.js `--check` (`SECCOMP_PROFILE_NODE`) within 128 MiB memory limit.
 
 ### Phase 8: Web Studio Client & Collaborative Editor
 - React 18 + TypeScript + Vite frontend.

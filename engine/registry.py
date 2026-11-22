@@ -74,6 +74,43 @@ def detect_python_sqlite_version(python_bin: str) -> str:
         return f"Incomplete toolchain on host (inspection error: {exc})"
 
 
+def detect_pandas_version(python_bin: str) -> str:
+    """Inspect pandas and numpy library versions accessible to the Python runner."""
+    if not os.path.exists(python_bin):
+        basename = os.path.basename(python_bin)
+        user_path = shutil.which(basename)
+        if user_path:
+            return f"Unavailable to sandbox rootfs (installed in user path: {user_path})"
+        return "Not installed on host"
+    try:
+        proc = subprocess.run(
+            [python_bin, "-c", "import pandas as pd, numpy as np; print(f'pandas {pd.__version__} (numpy {np.__version__})')"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+        user_python = shutil.which("python3")
+        if user_python and user_python != python_bin:
+            try:
+                user_proc = subprocess.run(
+                    [user_python, "-c", "import pandas as pd, numpy as np; print(f'pandas {pd.__version__} (numpy {np.__version__})')"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if user_proc.returncode == 0 and user_proc.stdout.strip():
+                    return f"Unavailable to sandbox rootfs (installed in user path: {user_python}, {user_proc.stdout.strip()})"
+            except Exception:
+                pass
+        return "Incomplete toolchain on host (pandas/numpy modules failed to load)"
+    except Exception as exc:
+        return f"Incomplete toolchain on host (inspection error: {exc})"
+
+
 class RuntimeRegistry:
     """Central registry of typed RuntimeAdapters."""
 
@@ -983,3 +1020,199 @@ class RuntimeRegistry:
             cleanup_spec=CleanupSpec(),
         )
         self.register(oracle_adapter)
+
+        # Phase 7: Data Science & Browser Frontend Runtimes
+        # 1. Pandas isolated execution with DataFrame tabular serialization
+        pandas_harness_script = (
+            "import sys, os, json\n"
+            "target = sys.argv[1] if len(sys.argv) > 1 else '/workspace/solution.py'\n"
+            "try:\n"
+            "    import pandas as pd\n"
+            "    import numpy as np\n"
+            "except ImportError as e:\n"
+            "    sys.stderr.write(f'Pandas import error: {e}\\n')\n"
+            "    sys.exit(1)\n"
+            "\n"
+            "def serialize_df(df):\n"
+            "    columns = [str(c) for c in df.columns.tolist()]\n"
+            "    rows = []\n"
+            "    for record in df.to_dict(orient='records'):\n"
+            "        row = []\n"
+            "        for col in df.columns:\n"
+            "            val = record.get(col)\n"
+            "            if pd.isna(val) or val is None:\n"
+            "                row.append(None)\n"
+            "            elif hasattr(val, 'isoformat'):\n"
+            "                row.append(val.isoformat())\n"
+            "            elif isinstance(val, (np.bool_, bool)):\n"
+            "                row.append(bool(val))\n"
+            "            elif isinstance(val, (np.integer, int)):\n"
+            "                row.append(int(val))\n"
+            "            elif isinstance(val, (np.floating, float)):\n"
+            "                row.append(float(val))\n"
+            "            elif isinstance(val, bytes):\n"
+            "                row.append(val.hex())\n"
+            "            else:\n"
+            "                row.append(str(val))\n"
+            "        rows.append(row)\n"
+            "    return {'columns': columns, 'rows': rows}\n"
+            "\n"
+            "def serialize_series(s):\n"
+            "    name = str(s.name) if s.name is not None else 'value'\n"
+            "    rows = []\n"
+            "    for val in s.tolist():\n"
+            "        if pd.isna(val) or val is None:\n"
+            "            rows.append([None])\n"
+            "        elif hasattr(val, 'isoformat'):\n"
+            "            rows.append([val.isoformat()])\n"
+            "        elif isinstance(val, (np.bool_, bool)):\n"
+            "            rows.append([bool(val)])\n"
+            "        elif isinstance(val, (np.integer, int)):\n"
+            "            rows.append([int(val)])\n"
+            "        elif isinstance(val, (np.floating, float)):\n"
+            "            rows.append([float(val)])\n"
+            "        elif isinstance(val, bytes):\n"
+            "            rows.append([val.hex()])\n"
+            "        else:\n"
+            "            rows.append([str(val)])\n"
+            "    return {'columns': [name], 'rows': rows}\n"
+            "\n"
+            "def run():\n"
+            "    if not os.path.exists(target):\n"
+            "        sys.stderr.write(f'Submission file not found: {target}\\n')\n"
+            "        sys.exit(1)\n"
+            "    try:\n"
+            "        with open(target, 'r', encoding='utf-8') as f:\n"
+            "            code_str = f.read()\n"
+            "    except Exception as e:\n"
+            "        sys.stderr.write(f'Failed to read submission: {e}\\n')\n"
+            "        sys.exit(1)\n"
+            "    env = {'pd': pd, 'pandas': pd, 'np': np, 'numpy': np, '__name__': '__main__'}\n"
+            "    try:\n"
+            "        compiled = compile(code_str, target, 'exec')\n"
+            "        exec(compiled, env)\n"
+            "    except Exception as e:\n"
+            "        import traceback\n"
+            "        traceback.print_exc(file=sys.stderr)\n"
+            "        sys.exit(1)\n"
+            "    results = []\n"
+            "    for var_name in ['result', 'res', 'df', 'output']:\n"
+            "        if var_name in env and var_name not in ['pd', 'pandas', 'np', 'numpy']:\n"
+            "            val = env[var_name]\n"
+            "            if isinstance(val, pd.DataFrame):\n"
+            "                results.append(serialize_df(val))\n"
+            "                break\n"
+            "            elif isinstance(val, pd.Series):\n"
+            "                results.append(serialize_series(val))\n"
+            "                break\n"
+            "    if not results:\n"
+            "        for fn_name in ['solution', 'solve']:\n"
+            "            if fn_name in env and callable(env[fn_name]):\n"
+            "                try:\n"
+            "                    ret = env[fn_name]()\n"
+            "                    if isinstance(ret, pd.DataFrame):\n"
+            "                        results.append(serialize_df(ret))\n"
+            "                        break\n"
+            "                    elif isinstance(ret, pd.Series):\n"
+            "                        results.append(serialize_series(ret))\n"
+            "                        break\n"
+            "                except Exception:\n"
+            "                    pass\n"
+            "    if not results:\n"
+            "        for k, v in env.items():\n"
+            "            if k.startswith('__') or k in ['pd', 'pandas', 'np', 'numpy']:\n"
+            "                continue\n"
+            "            if isinstance(v, pd.DataFrame):\n"
+            "                results.append(serialize_df(v))\n"
+            "                break\n"
+            "            elif isinstance(v, pd.Series):\n"
+            "                results.append(serialize_series(v))\n"
+            "                break\n"
+            "    if results:\n"
+            "        dump_fn = lambda obj: json.dumps(obj, default=lambda o: str(o))\n"
+            "        if len(results) == 1:\n"
+            "            print(dump_fn(results[0]))\n"
+            "        else:\n"
+            "            print(dump_fn(results))\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            "    run()\n"
+        )
+
+        pandas_bin = os.environ.get("PES2_PANDAS_PYTHON_BIN") or python_bin
+        pandas_adapter = RuntimeAdapter(
+            id=LanguageId.PANDAS,
+            display_name="Pandas",
+            official_version="Python 3.14 (pandas 3.1, numpy 2.5)",
+            installed_version=detect_pandas_version(pandas_bin),
+            family=RuntimeFamily.FRAMEWORK,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=pandas_bin,
+                execution_args=["-I", "-c", pandas_harness_script, "/workspace/solution.py"],
+                source_filename="solution.py",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=3000,
+                    memory_kb=262144,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.PYTHON,
+            ),
+            seccomp_policy=SeccompPolicyProfile.PYTHON,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(pandas_adapter)
+
+        # 2. React 18 isolated browser client-side execution specification
+        react_adapter = RuntimeAdapter(
+            id=LanguageId.REACT,
+            display_name="React",
+            official_version="React 18.2 (Babel, client-side sandbox)",
+            installed_version="Client-side browser sandbox (React 18.2, iframe isolation: sandbox=\"allow-scripts\", strict CSP)",
+            family=RuntimeFamily.FRAMEWORK,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=node_bin,
+                execution_args=["--check", "/workspace/Solution.jsx"],
+                source_filename="Solution.jsx",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=2000,
+                    memory_kb=131072,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.NODE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.NODE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(react_adapter)
+
+        # 3. Vanilla JavaScript (DOM) isolated browser client-side execution specification
+        vanilla_js_adapter = RuntimeAdapter(
+            id=LanguageId.VANILLA_JS,
+            display_name="JavaScript (DOM)",
+            official_version="Browser JavaScript (ES2022, client-side sandbox)",
+            installed_version="Client-side browser sandbox (DOM ES2022, iframe isolation: sandbox=\"allow-scripts\", strict CSP)",
+            family=RuntimeFamily.FRAMEWORK,
+            compile_spec=None,
+            execution_spec=ExecutionSpec(
+                runner_bin=node_bin,
+                execution_args=["--check", "/workspace/Solution.js"],
+                source_filename="Solution.js",
+                default_resource_limits=ResourceLimits(
+                    wall_ms=5000,
+                    cpu_ms=2000,
+                    memory_kb=131072,
+                    pids=16,
+                    max_output_bytes=65536,
+                ),
+                seccomp_profile=SeccompPolicyProfile.NODE,
+            ),
+            seccomp_policy=SeccompPolicyProfile.NODE,
+            cleanup_spec=CleanupSpec(),
+        )
+        self.register(vanilla_js_adapter)

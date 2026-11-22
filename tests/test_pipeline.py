@@ -373,9 +373,13 @@ class TestExecutionPipeline(unittest.TestCase):
         self.assertEqual(len(initial_workspaces), len(after_workspaces))
 
     def test_unsupported_language_fails_safely(self) -> None:
+        from enum import Enum
+        class DummyLang(str, Enum):
+            UNREGISTERED = "unregistered"
+
         request = ExecutionRequest(
             request_id="req-unknown",
-            language_id=LanguageId.REACT,
+            language_id=DummyLang.UNREGISTERED,  # type: ignore
             source_code="SELECT 1;\n",
         )
         res = self.pipeline.execute(request)
@@ -2947,9 +2951,344 @@ class TestExecutionPipeline(unittest.TestCase):
         ]
         self.assertEqual(len(leftovers), 0)
 
+    # =========================================================================
+    # Phase 7: Data Science (Pandas) & Browser Frontend Runtimes
+    # =========================================================================
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_pandas_truthful_milestones_no_compiling(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        if not adapter or not adapter.is_installed:
+            self.skipTest(f"Pandas toolchain unavailable: {adapter.installed_version if adapter else 'None'}")
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 150, 120, 45000, '{"columns": ["id", "val"], "rows": [[1, "alpha"], [2, "beta"]]}\n', "")
+        )
+        request = ExecutionRequest(
+            request_id="req-pandas-ok",
+            language_id=LanguageId.PANDAS,
+            source_code="import pandas as pd\ndf = pd.DataFrame({'id': [1, 2], 'val': ['alpha', 'beta']})\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        self.assertIn("columns", res.stdout)
+        self.assertIn("rows", res.stdout)
+
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.PYTHON)
+        self.assertEqual(inv["limits"].memory_kb, 262144)  # 256 MiB
+        self.assertEqual(inv["limits"].cpu_ms, 3000)
+        self.assertEqual(inv["limits"].wall_ms, 5000)
+
+    def test_pandas_syntax_or_runtime_error_milestone(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        if not adapter or not adapter.is_installed:
+            self.skipTest(f"Pandas toolchain unavailable: {adapter.installed_version if adapter else 'None'}")
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 80, 60, 40000, "", "KeyError: 'nonexistent_col'\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-pandas-err",
+            language_id=LanguageId.PANDAS,
+            source_code="import pandas as pd\ndf = pd.DataFrame({'a': [1]})\nprint(df['nonexistent_col'])\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("KeyError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+
+    def test_pandas_timeout_milestone(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        if not adapter or not adapter.is_installed:
+            self.skipTest(f"Pandas toolchain unavailable: {adapter.installed_version if adapter else 'None'}")
+        self.runner.queue_result(
+            RunnerResult("TIMEOUT", 124, 9, 5001, 3000, 50000, "", "Execution exceeded wall timeout\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-pandas-timeout",
+            language_id=LanguageId.PANDAS,
+            source_code="import time\nwhile True: time.sleep(1)\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.TIMEOUT)
+        self.assertEqual(res.exit_code, 124)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.TIMEOUT,
+        ]
+        self.assertEqual(milestone_names, expected)
+
+    def test_pandas_memory_limit_milestone(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        if not adapter or not adapter.is_installed:
+            self.skipTest(f"Pandas toolchain unavailable: {adapter.installed_version if adapter else 'None'}")
+        self.runner.queue_result(
+            RunnerResult("MEMORY_LIMIT", 137, 9, 500, 400, 262144, "", "Killed (Out of memory)\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-pandas-oom",
+            language_id=LanguageId.PANDAS,
+            source_code="import numpy as np\narr = np.ones((10000, 10000), dtype=float)\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.MEMORY_LIMIT)
+        self.assertEqual(res.exit_code, 137)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.MEMORY_LIMIT,
+        ]
+        self.assertEqual(milestone_names, expected)
+
+    def test_uninstalled_or_unavailable_pandas_fails_safely(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        if not adapter or adapter.is_installed:
+            self.skipTest("Pandas is installed; skipping fail-closed test")
+        request = ExecutionRequest(
+            request_id="req-pandas-fail-closed",
+            language_id=LanguageId.PANDAS,
+            source_code="import pandas as pd\n",
+        )
+        res = self.pipeline.execute(request)
+        self.assertEqual(res.final_status, Milestone.SANDBOX_ERROR)
+        self.assertIn("not installed", res.stderr.lower())
+        self.assertIn("unavailable", res.stderr.lower())
+
+    def test_pandas_harness_direct_dataframe_serialization(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory(prefix="pes2-test-pandas-") as tmpdir:
+            sol_path = os.path.join(tmpdir, "solution.py")
+            with open(sol_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "import pandas as pd, numpy as np\n"
+                    "df = pd.DataFrame({\n"
+                    "    'num': [1, 2, 3],\n"
+                    "    'name': ['Alice', 'Bob', None],\n"
+                    "    'val': [1.5, np.nan, 3.0],\n"
+                    "    'active': [True, False, True],\n"
+                    "})\n"
+                )
+
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sol_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(proc.returncode, 0, f"Harness failed: {proc.stderr}")
+            parsed = json.loads(proc.stdout.strip())
+            self.assertEqual(parsed["columns"], ["num", "name", "val", "active"])
+            self.assertEqual(
+                parsed["rows"],
+                [
+                    [1, "Alice", 1.5, True],
+                    [2, "Bob", None, False],
+                    [3, None, 3.0, True],
+                ],
+            )
+
+    def test_pandas_harness_handles_series_and_nulls(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory(prefix="pes2-test-pandas-series-") as tmpdir:
+            sol_path = os.path.join(tmpdir, "solution.py")
+            with open(sol_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "import pandas as pd, numpy as np\n"
+                    "s = pd.Series([10, None, 30], name='totals')\n"
+                )
+
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sol_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(proc.returncode, 0, f"Harness failed: {proc.stderr}")
+            parsed = json.loads(proc.stdout.strip())
+            self.assertEqual(parsed["columns"], ["totals"])
+            self.assertEqual(parsed["rows"], [[10], [None], [30]])
+
+    def test_pandas_harness_handles_custom_function_or_result_variable(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+
+        harness_script = adapter.execution_spec.execution_args[2]
+
+        with tempfile.TemporaryDirectory(prefix="pes2-test-pandas-fn-") as tmpdir:
+            sol_path = os.path.join(tmpdir, "solution.py")
+            with open(sol_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "import pandas as pd\n"
+                    "def solve():\n"
+                    "    return pd.DataFrame({'x': ['A', 'B'], 'y': [100, 200]})\n"
+                )
+
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", harness_script, sol_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(proc.returncode, 0, f"Harness failed: {proc.stderr}")
+            parsed = json.loads(proc.stdout.strip())
+            self.assertEqual(parsed["columns"], ["x", "y"])
+            self.assertEqual(parsed["rows"], [["A", 100], ["B", 200]])
+
+    def test_react_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 50, 40, 20000, "", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-react-ok",
+            language_id=LanguageId.REACT,
+            source_code="export default function App() { return <div>Hello React</div>; }\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.NODE)
+
+    def test_react_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 40, 30, 20000, "", "SyntaxError: Unexpected token\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-react-err",
+            language_id=LanguageId.REACT,
+            source_code="export default function App( { return <div>;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("SyntaxError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+
+    def test_vanilla_js_truthful_milestones_no_compiling(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("OK", 0, 0, 50, 40, 20000, "", "")
+        )
+        request = ExecutionRequest(
+            request_id="req-vjs-ok",
+            language_id=LanguageId.VANILLA_JS,
+            source_code="const root = document.getElementById('root'); root.textContent = 'Hello DOM';\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.COMPLETED,
+        ]
+        self.assertEqual(milestone_names, expected)
+        self.assertNotIn(Milestone.COMPILING, milestone_names)
+        self.assertEqual(len(self.runner.invocations), 1)
+        inv = self.runner.invocations[0]
+        self.assertEqual(inv["seccomp_profile"], SeccompPolicyProfile.NODE)
+
+    def test_vanilla_js_syntax_or_runtime_error_milestone(self) -> None:
+        self.runner.queue_result(
+            RunnerResult("RUNTIME_ERROR", 1, 0, 40, 30, 20000, "", "SyntaxError: Unexpected token ';'\n")
+        )
+        request = ExecutionRequest(
+            request_id="req-vjs-err",
+            language_id=LanguageId.VANILLA_JS,
+            source_code="const x = ;\n",
+        )
+        res = self.pipeline.execute(request)
+
+        self.assertEqual(res.final_status, Milestone.RUNTIME_ERROR)
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("SyntaxError", res.stderr)
+        milestone_names = [m.milestone for m in res.milestones]
+        expected = [
+            Milestone.ACCEPTED,
+            Milestone.RUNNING,
+            Milestone.RUNTIME_ERROR,
+        ]
+        self.assertEqual(milestone_names, expected)
+
+    def test_live_pandas_execution_with_native_runner(self) -> None:
+        pandas_adapter = self.registry.get(LanguageId.PANDAS)
+        if not pandas_adapter or not pandas_adapter.is_installed:
+            self.skipTest(f"Pandas toolchain unavailable: {pandas_adapter.installed_version if pandas_adapter else 'None'}")
+
+        runner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sandbox", "pes2-runner"))
+        if not os.path.exists(runner_path):
+            self.skipTest("Native runner binary pes2-runner not found")
+
+        cgroup_root = "/sys/fs/cgroup/pes2-runner-pool"
+        if not os.path.exists(cgroup_root) or not os.access(cgroup_root, os.W_OK):
+            self.skipTest("Cgroup v2 hierarchy unavailable for native runner execution")
+
+        native_runner = NativeSandboxRunner(runner_path=runner_path)
+        pipeline = ExecutionPipeline(self.registry, native_runner)
+
+        req = ExecutionRequest(
+            request_id="req-live-pandas-df-ok",
+            language_id=LanguageId.PANDAS,
+            source_code="import pandas as pd\ndf = pd.DataFrame({'a': [1, 2], 'b': [10, 20]})\n",
+        )
+        res = pipeline.execute(req)
+        self.assertEqual(res.final_status, Milestone.COMPLETED)
+        self.assertEqual(res.exit_code, 0)
+        parsed = json.loads(res.stdout.strip())
+        self.assertEqual(parsed["columns"], ["a", "b"])
+        self.assertEqual(parsed["rows"], [[1, 10], [2, 20]])
+
 
 if __name__ == "__main__":
     unittest.main()

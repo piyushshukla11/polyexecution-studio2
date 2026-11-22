@@ -40,9 +40,9 @@ PolyExecution Studio 2 is a high-performance, multi-language remote execution en
 | 22 | **Elixir** | `Elixir 1.20` (OTP 29) | Not installed on host | BEAM VM |
 | 23 | **Dart** | `Dart 3.13` | Not installed on host | Managed / JIT |
 | 24 | **PostgreSQL** | `PostgreSQL 18` | `psql 18.6` client installed | SQL Database |
-| 25 | **Pandas** | `Python 3.14 + Pandas 3.1.0 + NumPy 2.5.4` | `python3` installed; libs missing | Data Science |
-| 26 | **React** | `Node.js 18 + React 18.2.0` | `Node.js` installed | Web Framework |
-| 27 | **Vanilla JS** | `ECMAScript 2023` (standard ECMAScript runtime) | Dedicated harness missing | Interpreted / V8 |
+| 25 | **Pandas** | `Python 3.14 + Pandas 3.1.0 + NumPy 2.5.4` | Single-stage isolated harness; 256 MiB memory; tabular JSON | Data Science |
+| 26 | **React** | `React 18.2.0` | Sandboxed iframe (`sandbox="allow-scripts"`, opaque origin, strict CSP) | Web Framework |
+| 27 | **Vanilla JS** | `Browser JavaScript (DOM, ES2022)` | Sandboxed iframe (`sandbox="allow-scripts"`, opaque origin, strict CSP) | Interpreted / DOM |
 | 28 | **SQLite** | `SQLite 3.54 (in-memory)` | `SQLite 3.54.0` installed | SQL Database |
 
 ---

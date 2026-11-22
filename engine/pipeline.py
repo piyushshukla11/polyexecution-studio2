@@ -88,10 +88,11 @@ class ExecutionPipeline:
             )
 
         # Pre-check 2: Adapter existence and installation
+        lang_name = getattr(request.language_id, "value", str(request.language_id))
         adapter = self.registry.get(request.language_id)
         if adapter is None:
             now = current_time_ms()
-            ev = MilestoneEvent(Milestone.SANDBOX_ERROR, now, f"Unsupported language: {request.language_id}")
+            ev = MilestoneEvent(Milestone.SANDBOX_ERROR, now, f"Unsupported language: {lang_name}")
             emit(ev)
             return ExecutionResult(
                 request_id=request.request_id,
@@ -104,7 +105,7 @@ class ExecutionPipeline:
                 cpu_ms=0,
                 peak_memory_kb=0,
                 stdout="",
-                stderr=f"Runtime adapter for '{request.language_id.value}' not found in registry",
+                stderr=f"Runtime adapter for '{lang_name}' not found in registry",
             )
 
         if not adapter.is_installed:
@@ -112,7 +113,7 @@ class ExecutionPipeline:
             ev = MilestoneEvent(
                 Milestone.SANDBOX_ERROR,
                 now,
-                f"Language '{request.language_id.value}' not installed on host or unavailable: {adapter.installed_version}",
+                f"Language '{lang_name}' not installed on host or unavailable: {adapter.installed_version}",
             )
             emit(ev)
             return ExecutionResult(
@@ -126,7 +127,7 @@ class ExecutionPipeline:
                 cpu_ms=0,
                 peak_memory_kb=0,
                 stdout="",
-                stderr=f"Toolchain for '{request.language_id.value}' is not installed on this host ({adapter.installed_version})",
+                stderr=f"Toolchain for '{lang_name}' is not installed on this host ({adapter.installed_version})",
             )
 
         # Pre-check 3: Validate requested custom limits against runner capabilities

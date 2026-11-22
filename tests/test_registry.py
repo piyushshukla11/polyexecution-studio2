@@ -479,6 +479,65 @@ class TestRuntimeRegistry(unittest.TestCase):
             assert ad is not None
             self.assertEqual(ad.installed_version, "Not installed on host")
 
+    def test_pandas_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.PANDAS)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.FRAMEWORK)
+        self.assertEqual(adapter.display_name, "Pandas")
+        self.assertEqual(adapter.official_version, "Python 3.14 (pandas 3.1, numpy 2.5)")
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.source_filename, "solution.py")
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.PYTHON)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.PYTHON)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 262144)  # 256 MiB
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 3000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 5000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 16)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
+        self.assertIn("-c", adapter.execution_spec.execution_args)
+        self.assertIn("/workspace/solution.py", adapter.execution_spec.execution_args)
+
+    def test_react_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.REACT)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.FRAMEWORK)
+        self.assertEqual(adapter.display_name, "React")
+        self.assertEqual(adapter.official_version, "React 18.2 (Babel, client-side sandbox)")
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.jsx")
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.NODE)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
+        self.assertTrue(adapter.is_installed)
+        self.assertIn("sandbox=\"allow-scripts\"", adapter.installed_version)
+
+    def test_vanilla_js_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.VANILLA_JS)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.FRAMEWORK)
+        self.assertEqual(adapter.display_name, "JavaScript (DOM)")
+        self.assertEqual(adapter.official_version, "Browser JavaScript (ES2022, client-side sandbox)")
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.js")
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.NODE)
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.NODE)
+        self.assertTrue(adapter.is_installed)
+        self.assertIn("sandbox=\"allow-scripts\"", adapter.installed_version)
+
+    def test_all_28_environments_registered_in_inventory(self) -> None:
+        all_langs = list(LanguageId)
+        self.assertEqual(len(all_langs), 28)
+        for lang_id in all_langs:
+            adapter = self.registry.get(lang_id)
+            self.assertIsNotNone(adapter, f"Language {lang_id.value} must be registered in RuntimeRegistry")
+            assert adapter is not None
+            self.assertIsInstance(adapter.display_name, str)
+            self.assertIsInstance(adapter.official_version, str)
+            self.assertIsInstance(adapter.installed_version, str)
+            self.assertIsInstance(adapter.family, RuntimeFamily)
+
 
 if __name__ == "__main__":
     unittest.main()
