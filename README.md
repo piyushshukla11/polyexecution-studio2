@@ -53,3 +53,38 @@ PolyExecution Studio 2 is a high-performance, multi-language remote execution en
 - [PROGRESS.md](PROGRESS.md): Append-only engineering log.
 - [docs/01_ARCHITECTURE.md](docs/01_ARCHITECTURE.md): Multi-layer security model, runtime adapter contract, and database sandbox design.
 - [docs/04_BUILD_PLAN.md](docs/04_BUILD_PLAN.md): 10-phase staged implementation roadmap.
+
+---
+
+## 4. Web Studio Client & Collaborative Editor
+
+PolyExecution Studio 2 features a standalone browser-based developer studio built with React 18, TypeScript, Vite, and Monaco Editor.
+
+### Features
+- **Monaco Code Editor:** Syntax modes and highlighters for all 27 LeetCode languages + Bash (28 environments) with standard starter templates.
+- **Truthful Language Picker:** Categorized by execution family with accurate status indicators (`Supported`, `In Development`, `Uninstalled`).
+- **Kernel Telemetry Panel:** Direct visualization of Linux cgroups v2 resource metrics (`wallMs`, `cpuMs`, `peakMemoryKb`, `exitCode`, `signal`, `status`, and milestone lifecycle events).
+- **Multi-Stream Output Terminal:** View standard output, standard error, tabular results for SQL and Pandas DataFrames, and live isolated iframe previews for React and Vanilla JavaScript.
+- **Collaborative Architecture:** Honest standalone editor mode documenting the exact backend requirements (persistent WebSocket CRDT gateway) for multi-user synchronization without fake cursors or simulated bots.
+
+### Running the Web Studio Client
+```bash
+# Navigate to the client directory
+cd client
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+### Running Frontend Tests & Production Build
+```bash
+# Run Vitest test suite
+cd client
+npm test
+
+# Run TypeScript type check and production bundle build
+npm run build
+```

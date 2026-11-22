@@ -164,10 +164,20 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
   - Server-side syntax validation via Node.js `--check` (`SECCOMP_PROFILE_NODE`) within 128 MiB memory limit.
 
 ### Phase 8: Web Studio Client & Collaborative Editor
-- React 18 + TypeScript + Vite frontend.
-- Monaco code editor supporting all 27 language modes and syntaxes.
-- Multi-language dropdown with honest status badges (supported, in-development, uninstalled).
-- Telemetry panel rendering real Linux kernel metrics (`wallMs`, `cpuMs`, `peakMemoryKb`, `exitCode`, `status`).
+- Complete React 18 + TypeScript + Vite web studio client (`client/`):
+  - Monaco code editor integration (`@monaco-editor/react`) configured with syntax highlighters and language modes for all 27 LeetCode environments + Bash (28 environments).
+  - Idiomatic starter code templates (`CODE_TEMPLATES`) for all 28 environments with standard LeetCode class/function signatures.
+  - Multi-language picker (`LanguagePicker`) featuring execution family filters (`NATIVE`, `JVM`, `INTERPRETED`, `DOTNET`, `DATABASE`, `FRAMEWORK`), text search, and truthful status badges (`Supported`, `In Dev`, `Uninstalled`).
+  - Real Linux kernel telemetry panel (`TelemetryPanel`) rendering high-resolution wall clock timer (`wallMs`), CPU time (`cpuMs`), cgroups v2 peak memory (`peakMemoryKb` with KiB/MiB formatting), exit code, kernel signal, and sequential lifecycle milestone event chips.
+  - Multi-stream output terminal (`OutputTerminal`) supporting standard output, error streams, copy-to-clipboard, structured JSON tabular preview (`TabularPreview` for SQLite and Pandas results), and sandboxed iframe live UI preview (`BrowserPreview` for React and Vanilla JS).
+  - Collaborative editing architecture and honesty doctrine:
+    - Backend capability audit: The existing backend provides ephemeral gRPC worker daemons (`ExecutionWorkerService`) rather than persistent WebSocket document sync servers.
+    - Zero fake collaboration: strictly avoids simulated collaborator cursors, fake typing bots, or synthetic avatars.
+    - Dedicated collaboration status modal and hook (`useCollaboration`) truthfully reporting standalone editor mode while documenting the exact required backend infrastructure for future multi-user CRDT synchronization (persistent WebSocket gateway, document room discovery, and presence protocol).
+  - Verification & testing:
+    - Vitest frontend test suite: 15 unit tests across 5 test files (`MonacoLanguages`, `LanguagePicker`, `TelemetryPanel`, `OutputTerminal`, `Collaboration`) passing with zero failures.
+    - Python integration suite: `tests/test_client_integration.py` validating language consistency across frontend constants and `engine.models.LanguageId`.
+    - Production build verification: `tsc && vite build` clean build generating optimized production assets in `client/dist/`.
 
 ### Phase 9: End-to-End Verification & Production Packaging
 - Multi-service Docker Compose configuration (Client reverse proxy, API Gateway, Worker daemon, Database sandboxes).
