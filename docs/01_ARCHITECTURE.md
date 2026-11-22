@@ -279,12 +279,12 @@ PolyExecution Studio 2 is packaged as an isolated multi-service Docker Compose t
 4. **Remote Execution Worker Daemon (`worker-daemon`):**
    - Python `grpc.aio` execution daemon (`engine.daemon.server`) running on internal gRPC port 50051.
    - Configured with `PES2_ALLOW_INTERNAL_NETWORKING=1` for secure private service mesh communication.
+   - Hardened inside Compose with `no-new-privileges:true`, no `SYS_ADMIN` capability, restricted container seccomp, and mounts a dedicated delegated cgroup subtree (`${PES2_CGROUP_ROOT:-/sys/fs/cgroup/pes2}`).
    - Strictly unexposed to host or public interfaces; protected by admission control and dynamic memory budgets.
 
-5. **Disposable Database Sandbox (`db-postgres`):**
-   - Ephemeral PostgreSQL 16 database sandbox on `pes2-internal`.
-   - Configured with non-superuser runner role (`pes2_runner`) and engine-level file I/O primitives strictly revoked.
-   - Isolated from public host interfaces; secrets managed via `.env.example` templates and environment variables without committing credentials.
+5. **Database Sandboxing:**
+   - SQLite in-memory isolation is supported as the default zero-dependency database sandbox.
+   - Persistent database containers (such as `db-postgres` and persistent volumes) have been removed from the default production Compose stack until connected to a supported disposable sandbox path.
 
 ### Container Security Posture & Isolation Boundaries
 - **No Docker Socket Mounting:** Neither the worker daemon nor the API gateway mounts `/var/run/docker.sock`. Containerized services cannot inspect, control, or spawn sibling containers.

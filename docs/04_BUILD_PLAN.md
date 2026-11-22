@@ -208,12 +208,12 @@ PolyExecution Studio 2 is built in staged, verifiable phases. No phase is consid
   - Deterministic cleanup verifying complete removal of ephemeral workspace directories (`/tmp/pes2-*`) across success, failure, timeout, and cancellation.
   - Graceful cancellation handling under concurrent execution.
 - Hardening & Compose integration test suites:
-  - `tests/test_ingress_hardening.py`: 16 tests verifying request size limits (413), schema validation (400), custom limits bounds (400), browser-only rejection (400), token authentication (401), cross-origin rejection (403), CORS reflection on allowed origins, concurrency cap (503), and internal networking flags.
-  - `tests/test_compose_integration.py`: 6 tests verifying Compose topology, loopback binding, worker capabilities (no-new-privileges, delegated cgroups, removal of SYS_ADMIN/unconfined seccomp), and real kernel namespace execution checks.
-  - `tests/test_browser_real_engine.py`: 3 tests in real headless Chromium verifying real JSX DOM rendering, CSP connect-src blocking, and watchdog termination.
+  - `tests/test_ingress_hardening.py`: 18 tests verifying request size limits (413), schema validation (400), custom limits bounds (400), browser-only rejection (400), token authentication (401), cross-origin rejection (403), CORS reflection on allowed origins, concurrency cap (503), internal networking flags, and public ingress fail-closed enforcement (code 2).
+  - `tests/test_compose_integration.py`: 7 tests verifying Compose topology, loopback binding, worker capabilities (no-new-privileges, delegated cgroups, removal of SYS_ADMIN/unconfined seccomp), Compose public ingress fail-closed simulation, and real kernel namespace execution checks.
+  - `tests/test_browser_real_engine.py`: 4 tests in real headless Chromium verifying production Sucrase JSX compilation and DOM rendering, postMessage schema validation, parent watchdog termination and frame replacement, and CSP connect-src network denial.
   - `client/tests/BrowserSandboxHardening.test.tsx`: 6 tests verifying Sucrase JSX compilation, error handling, watchdog timeout, and postMessage validation.
   - `client/tests/ApiStreaming.test.ts`: 4 tests verifying real-time SSE milestone streaming, dynamic inventory population, auth header attachment, and offline fallbacks.
-  - Total test coverage: 198 passing Python tests (34 skips), 3 passing Playwright Chromium tests, 25 passing Vitest tests, and 220 passing C seccomp profile unit verification tests.
+  - Total test coverage: 201 passing Python tests (34 skips), 4 passing Playwright Chromium tests, 25 passing Vitest tests, and 220 passing C seccomp profile unit verification tests.
 
 ---
 

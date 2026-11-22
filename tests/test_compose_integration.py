@@ -63,6 +63,42 @@ class TestDockerComposeConfiguration(unittest.TestCase):
                     f"Service '{name}' must not expose host ports directly; internal communication only.",
                 )
 
+    def test_gateway_receives_bind_host_and_fails_closed_on_public_ingress(self) -> None:
+        """Compose must pass PES2_BIND_HOST to api-gateway so public ingress triggers fail-closed auth checks."""
+        parsed = yaml.safe_load(self.compose_content)
+        gw_env = parsed.get("services", {}).get("api-gateway", {}).get("environment", [])
+        self.assertTrue(
+            any("PES2_BIND_HOST" in str(e) for e in gw_env),
+            "api-gateway service in docker-compose.yml must receive PES2_BIND_HOST from ingress boundary",
+        )
+
+        from unittest.mock import patch
+        from engine.gateway.server import main as gateway_main
+
+        # Simulate Compose running with public PES2_BIND_HOST and empty PES2_API_KEY
+        with patch("engine.gateway.server.run_gateway"):
+            old_bind = os.environ.get("PES2_BIND_HOST")
+            old_key = os.environ.get("PES2_API_KEY")
+            try:
+                os.environ["PES2_BIND_HOST"] = "0.0.0.0"
+                os.environ.pop("PES2_API_KEY", None)
+                code = gateway_main([
+                    "--host", "0.0.0.0",
+                    "--allow-internal-network",
+                ])
+                self.assertEqual(
+                    code,
+                    2,
+                    "Gateway must fail closed with exit code 2 when Compose ingress is public without API key",
+                )
+            finally:
+                if old_bind is not None:
+                    os.environ["PES2_BIND_HOST"] = old_bind
+                else:
+                    os.environ.pop("PES2_BIND_HOST", None)
+                if old_key is not None:
+                    os.environ["PES2_API_KEY"] = old_key
+
 
 class TestRealSandboxExecutionCheck(unittest.TestCase):
     """Real kernel sandbox capability and execution check."""

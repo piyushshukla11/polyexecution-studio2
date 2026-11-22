@@ -11,6 +11,10 @@ services:
     networks:
       - pes2-public
       - pes2-internal
+    environment:
+      - PES2_BIND_HOST=${PES2_BIND_HOST:-127.0.0.1}
+      - PES2_API_KEY=${PES2_API_KEY:-}
+      - PES2_INSECURE_NO_AUTH=${PES2_INSECURE_NO_AUTH:-0}
     depends_on:
       client:
         condition: service_healthy
@@ -88,6 +92,7 @@ services:
       - PES2_GATEWAY_HOST=0.0.0.0
       - PES2_GATEWAY_PORT=8000
       - PES2_ALLOW_INTERNAL_NETWORKING=1
+      - PES2_BIND_HOST=${PES2_BIND_HOST:-127.0.0.1}
       - PES2_DAEMON_ADDR=worker-daemon:50051
       - PES2_TIMEOUT_SEC=${PES2_GATEWAY_TIMEOUT_SEC:-30.0}
       - PES2_API_KEY=${PES2_API_KEY:-}

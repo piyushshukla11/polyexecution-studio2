@@ -306,10 +306,54 @@ class TestIngressHttpEndToEnd(unittest.TestCase):
             ret = gateway_main([
                 "--host", "0.0.0.0",
                 "--allow-internal-network",
+                "--public-host", "127.0.0.1",
             ])
             self.assertEqual(ret, 0)
             mock_run.assert_called_once()
             self.assertEqual(mock_run.call_args.kwargs["host"], "0.0.0.0")
+
+    def test_public_ingress_without_key_fails_closed(self) -> None:
+        from unittest.mock import patch
+        with patch("engine.gateway.server.run_gateway"):
+            # Public host passed via CLI argument
+            ret = gateway_main([
+                "--host", "0.0.0.0",
+                "--allow-internal-network",
+                "--public-host", "0.0.0.0",
+            ])
+            self.assertEqual(ret, 2)
+
+            # Public host passed via PES2_BIND_HOST environment variable
+            old_bind = os.environ.get("PES2_BIND_HOST")
+            old_key = os.environ.get("PES2_API_KEY")
+            try:
+                os.environ["PES2_BIND_HOST"] = "0.0.0.0"
+                os.environ.pop("PES2_API_KEY", None)
+                ret_env = gateway_main([
+                    "--host", "0.0.0.0",
+                    "--allow-internal-network",
+                ])
+                self.assertEqual(ret_env, 2)
+            finally:
+                if old_bind is not None:
+                    os.environ["PES2_BIND_HOST"] = old_bind
+                else:
+                    os.environ.pop("PES2_BIND_HOST", None)
+                if old_key is not None:
+                    os.environ["PES2_API_KEY"] = old_key
+
+    def test_public_ingress_with_api_key_enforces_auth(self) -> None:
+        from unittest.mock import patch
+        with patch("engine.gateway.server.run_gateway") as mock_run:
+            ret = gateway_main([
+                "--host", "0.0.0.0",
+                "--allow-internal-network",
+                "--public-host", "0.0.0.0",
+                "--api-key", "secure_production_token_123",
+            ])
+            self.assertEqual(ret, 0)
+            mock_run.assert_called_once()
+            self.assertTrue(mock_run.call_args.kwargs["require_auth"])
 
 
 if __name__ == "__main__":

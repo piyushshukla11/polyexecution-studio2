@@ -831,6 +831,11 @@ def main(args_list: Optional[list] = None) -> int:
         help="Permit binding to private internal container network interfaces (e.g. 0.0.0.0 in Docker Compose)",
     )
     parser.add_argument(
+        "--public-host",
+        default=os.environ.get("PES2_BIND_HOST"),
+        help="Public host interface where reverse proxy or ingress exposes the studio",
+    )
+    parser.add_argument(
         "--max-concurrency",
         type=int,
         default=int(os.environ.get("PES2_GATEWAY_MAX_CONCURRENCY", str(DEFAULT_MAX_CONCURRENCY))),
@@ -845,18 +850,35 @@ def main(args_list: Optional[list] = None) -> int:
     args = parser.parse_args(args_list)
 
     allow_internal = args.allow_internal_network or os.environ.get("PES2_ALLOW_INTERNAL_NETWORKING") == "1"
+    public_host = args.public_host or os.environ.get("PES2_BIND_HOST")
+
     if args.api_key:
         args.require_auth = True
 
-    # Security check: Non-loopback binding requires authentication unless explicitly bypassed or internal
-    if args.host not in ALLOWED_LOOPBACK_HOSTS and not args.insecure_no_auth and not allow_internal:
+    # 1. Public ingress boundary check: If reverse proxy / ingress host (PES2_BIND_HOST) is non-loopback,
+    # arbitrary code execution is exposed to external networks. Internal networking flags cannot bypass
+    # authentication when public ingress is enabled.
+    if public_host and public_host not in ALLOWED_LOOPBACK_HOSTS and not args.insecure_no_auth:
         if not args.api_key:
             sys.stderr.write(
-                f"Error: Production security violation: Binding to remote host '{args.host}' "
-                "requires server-side authentication (--api-key or PES2_API_KEY). "
-                "CORS is not an authentication boundary.\n"
+                f"Error: Production security violation: Ingress host '{public_host}' is exposed on a "
+                "non-loopback interface without server-side authentication (--api-key or PES2_API_KEY). "
+                "Arbitrary code execution must not be exposed on public interfaces without authentication.\n"
             )
             return 2
+        args.require_auth = True
+
+    # 2. Gateway listener check: Non-loopback binding requires authentication unless explicitly bypassed or internal
+    if args.host not in ALLOWED_LOOPBACK_HOSTS and not args.insecure_no_auth:
+        if not allow_internal:
+            if not args.api_key:
+                sys.stderr.write(
+                    f"Error: Production security violation: Binding to remote host '{args.host}' "
+                    "requires server-side authentication (--api-key or PES2_API_KEY). "
+                    "CORS is not an authentication boundary.\n"
+                )
+                return 2
+            args.require_auth = True
 
     if allow_internal and args.host not in ALLOWED_LOOPBACK_HOSTS:
         logger.warning(
