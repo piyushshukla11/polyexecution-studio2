@@ -321,12 +321,69 @@ class TestRuntimeRegistry(unittest.TestCase):
         self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 64)
         self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
 
+    def test_elixir_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.ELIXIR)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertEqual(adapter.family, RuntimeFamily.INTERPRETED)
+        self.assertIsNone(adapter.compile_spec)
+        self.assertEqual(adapter.execution_spec.runner_bin, "/usr/bin/elixir")
+        self.assertEqual(adapter.execution_spec.source_filename, "solution.exs")
+        self.assertEqual(adapter.execution_spec.execution_args[:2], ["--erl", "+S 2:2 +A 2"])
+        self.assertEqual(adapter.execution_spec.execution_args[2], "-e")
+        self.assertIn("/workspace/solution.exs", adapter.execution_spec.execution_args[3])
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.ELIXIR)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.ELIXIR)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 196608)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 10000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 5000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 64)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.max_output_bytes, 65536)
+
+    def test_csharp_adapter_contract(self) -> None:
+        adapter = self.registry.get(LanguageId.CSHARP)
+        self.assertIsNotNone(adapter)
+        assert adapter is not None
+        self.assertTrue(adapter.is_installed)
+        self.assertEqual(adapter.installed_version, "10.0.113")
+        self.assertEqual(adapter.family, RuntimeFamily.DOTNET)
+        self.assertIsNotNone(adapter.compile_spec)
+        assert adapter.compile_spec is not None
+        self.assertEqual(adapter.compile_spec.compiler_bin, "/usr/bin/dotnet")
+        self.assertEqual(adapter.compile_spec.source_filename, "Solution.cs")
+        self.assertEqual(adapter.compile_spec.artifact_output_name, "Solution.dll")
+        self.assertEqual(adapter.compile_spec.seccomp_profile, SeccompPolicyProfile.CSHARP)
+        self.assertEqual(adapter.compile_spec.compile_resource_limits.memory_kb, 262144)
+        self.assertEqual(adapter.compile_spec.compile_resource_limits.pids, 64)
+        self.assertEqual(adapter.compile_spec.compile_resource_limits.cpu_ms, 5000)
+        self.assertEqual(adapter.compile_spec.compile_resource_limits.wall_ms, 10000)
+
+        # Concrete reference assemblies and args check
+        ref_flags = [a for a in adapter.compile_spec.compile_args if a.startswith("-r:")]
+        self.assertGreater(len(ref_flags), 50)
+        self.assertTrue(any("System.Runtime.dll" in flag for flag in ref_flags))
+        self.assertTrue(any("System.Console.dll" in flag for flag in ref_flags))
+        self.assertIn("-nologo", adapter.compile_spec.compile_args)
+        self.assertIn("-target:exe", adapter.compile_spec.compile_args)
+        self.assertIn("-out:/workspace/Solution.dll", adapter.compile_spec.compile_args)
+        self.assertIn("/workspace/Solution.cs", adapter.compile_spec.compile_args)
+
+        # Execution spec contract
+        self.assertEqual(adapter.execution_spec.runner_bin, "/usr/bin/dotnet")
+        self.assertEqual(adapter.execution_spec.source_filename, "Solution.cs")
+        self.assertEqual(adapter.execution_spec.seccomp_profile, SeccompPolicyProfile.CSHARP)
+        self.assertEqual(adapter.seccomp_policy, SeccompPolicyProfile.CSHARP)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.memory_kb, 131072)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.pids, 32)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.cpu_ms, 2000)
+        self.assertEqual(adapter.execution_spec.default_resource_limits.wall_ms, 5000)
+        self.assertIn("--runtimeconfig", adapter.execution_spec.execution_args)
+        self.assertIn("/workspace/Solution.dll", adapter.execution_spec.execution_args)
+
     def test_phase5_unsupported_runtimes_truthful(self) -> None:
         unsupported = [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ELIXIR,
-            LanguageId.CSHARP,
         ]
         for lang_id in unsupported:
             adapter = self.registry.get(lang_id)
@@ -338,19 +395,9 @@ class TestRuntimeRegistry(unittest.TestCase):
             )
             self.assertIsNone(adapter.compile_spec)
 
-        # Truthful classification checks
-        csharp_adapter = self.registry.get(LanguageId.CSHARP)
-        assert csharp_adapter is not None
-        self.assertTrue(
-            csharp_adapter.installed_version.startswith("Incomplete toolchain on host"),
-            f"Expected dotnet without SDK to be reported incomplete: {csharp_adapter.installed_version}",
-        )
-        self.assertIn("launcher present", csharp_adapter.installed_version)
-
         for lang_id in [
             LanguageId.PYTHON2,
             LanguageId.SWIFT,
-            LanguageId.ELIXIR,
         ]:
             ad = self.registry.get(lang_id)
             assert ad is not None

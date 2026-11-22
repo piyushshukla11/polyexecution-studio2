@@ -12,6 +12,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/file.h>
+#include <sys/fsuid.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -1047,9 +1048,127 @@ static void action_erlang_prctl_dumpable_blocked(void) {
     prctl(PR_SET_DUMPABLE, 1);
 }
 
-static void action_erlang_socket_blocked(void) {
+static void action_erlang_chdir(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
-    socket(AF_INET, SOCK_STREAM, 0);
+    if (chdir("/tmp") != 0) _exit(3);
+}
+
+static void action_erlang_memfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "beam_jit", 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_erlang_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "beam_jit_trunc", 0);
+    if (fd < 0) _exit(3);
+    int rc = ftruncate(fd, 4096);
+    close(fd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_erlang_setsid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    (void)setsid();
+}
+
+static void action_erlang_pselect6(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    struct timespec ts = {0, 0};
+    (void)pselect(0, NULL, NULL, NULL, &ts, NULL);
+}
+
+static void action_erlang_close_range(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    (void)syscall(436, 100, 105, 0);
+}
+
+static void action_erlang_socketpair_unix(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(3);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_erlang_socketpair_inet_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    socketpair(AF_INET, SOCK_STREAM, 0, sv);
+}
+
+static void action_erlang_socket_returns_eperm(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_erlang_connect_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    connect(-1, NULL, 0);
+}
+
+static void action_erlang_bind_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    bind(-1, NULL, 0);
+}
+
+static void action_erlang_setfsuid_zero(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsuid(0);
+}
+
+static void action_erlang_setfsuid_nonzero_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsuid(1000);
+}
+
+static void action_erlang_setfsgid_zero(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsgid(0);
+}
+
+static void action_erlang_setfsgid_nonzero_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    setfsgid(1000);
+}
+
+static void action_erlang_sendmsg_recvmsg(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(2);
+    char buf = 'E';
+    struct iovec iov = { .iov_base = &buf, .iov_len = 1 };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    if (sendmsg(sv[0], &msg, 0) != 1) _exit(3);
+    char in_buf;
+    struct iovec in_iov = { .iov_base = &in_buf, .iov_len = 1 };
+    struct msghdr in_msg;
+    memset(&in_msg, 0, sizeof(in_msg));
+    in_msg.msg_iov = &in_iov;
+    in_msg.msg_iovlen = 1;
+    if (recvmsg(sv[1], &in_msg, 0) != 1 || in_buf != 'E') _exit(4);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_erlang_getsockopt_setsockopt(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(2);
+    int val = 1;
+    if (setsockopt(sv[0], SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) != 0) _exit(3);
+    int out_val = 0;
+    socklen_t len = sizeof(out_val);
+    if (getsockopt(sv[0], SOL_SOCKET, SO_REUSEADDR, &out_val, &len) != 0) _exit(4);
+    close(sv[0]);
+    close(sv[1]);
 }
 
 static void action_erlang_clone_user_blocked(void) {
@@ -1074,6 +1193,494 @@ static void action_erlang_sched_setscheduler_blocked(void) {
     if (seccomp_apply_profile(SECCOMP_PROFILE_ERLANG) != 0) _exit(2);
     struct sched_param param = {0};
     sched_setscheduler(0, SCHED_FIFO, &param);
+}
+
+static void action_elixir_getpgrp(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    (void)getpgrp();
+}
+
+static void action_elixir_getresuid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    uid_t ruid, euid, suid;
+    if (getresuid(&ruid, &euid, &suid) != 0) _exit(3);
+}
+
+static void action_elixir_getresgid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    gid_t rgid, egid, sgid;
+    if (getresgid(&rgid, &egid, &sgid) != 0) _exit(3);
+}
+
+static void action_elixir_wait4(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int status;
+    (void)wait4(-1, &status, WNOHANG, NULL);
+}
+
+static void action_elixir_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_elixir_epoll_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create, 1);
+    if (epfd < 0) _exit(3);
+    close(epfd);
+}
+
+static void action_elixir_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    close(epfd);
+}
+
+static void action_elixir_epoll_ctl(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    int p[2];
+    if (pipe(p) != 0) { close(epfd); _exit(3); }
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = p[0];
+    int rc = (int)syscall(SYS_epoll_ctl, epfd, EPOLL_CTL_ADD, p[0], &ev);
+    close(p[0]); close(p[1]); close(epfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_elixir_epoll_wait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_wait, epfd, &ev, 1, 0);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_elixir_epoll_pwait(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    int nfds = (int)syscall(SYS_epoll_pwait, epfd, &ev, 1, 0, NULL);
+    close(epfd);
+    if (nfds < 0) _exit(4);
+}
+
+static void action_elixir_epoll_pwait2(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int epfd = (int)syscall(SYS_epoll_create1, 0);
+    if (epfd < 0) _exit(3);
+    struct epoll_event ev;
+    struct timespec ts = {0, 0};
+#ifdef SYS_epoll_pwait2
+    int nfds = (int)syscall(SYS_epoll_pwait2, epfd, &ev, 1, &ts, NULL);
+    close(epfd);
+    if (nfds < 0 && errno != ENOSYS) _exit(4);
+#else
+    close(epfd);
+#endif
+}
+
+static void action_elixir_poll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int p[2];
+    if (pipe(p) != 0) _exit(3);
+    struct pollfd pfd = {.fd = p[0], .events = POLLIN, .revents = 0};
+    int rc = poll(&pfd, 1, 0);
+    close(p[0]); close(p[1]);
+    if (rc < 0) _exit(4);
+}
+
+static void action_elixir_ppoll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int p[2];
+    if (pipe(p) != 0) _exit(3);
+    struct pollfd pfd = {.fd = p[0], .events = POLLIN, .revents = 0};
+    struct timespec ts = {0, 0};
+    int rc = ppoll(&pfd, 1, &ts, NULL);
+    close(p[0]); close(p[1]);
+    if (rc < 0) _exit(4);
+}
+
+static void action_elixir_timerfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int tfd = (int)syscall(SYS_timerfd_create, CLOCK_MONOTONIC, 0);
+    if (tfd < 0) _exit(3);
+    close(tfd);
+}
+
+static void action_elixir_timerfd_settime(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int tfd = (int)syscall(SYS_timerfd_create, CLOCK_MONOTONIC, 0);
+    if (tfd < 0) _exit(3);
+    struct itimerspec its;
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = 1;
+    int rc = (int)syscall(SYS_timerfd_settime, tfd, 0, &its, NULL);
+    close(tfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_elixir_timerfd_gettime(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int tfd = (int)syscall(SYS_timerfd_create, CLOCK_MONOTONIC, 0);
+    if (tfd < 0) _exit(3);
+    struct itimerspec its;
+    int rc = (int)syscall(SYS_timerfd_gettime, tfd, &its);
+    close(tfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_elixir_chdir(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    if (chdir(".") != 0) _exit(3);
+}
+
+static void action_elixir_memfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int mfd = (int)syscall(SYS_memfd_create, "elixir_jit", 0);
+    if (mfd < 0) _exit(3);
+    close(mfd);
+}
+
+static void action_elixir_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int mfd = (int)syscall(SYS_memfd_create, "elixir_jit", 0);
+    if (mfd < 0) _exit(3);
+    int rc = ftruncate(mfd, 4096);
+    close(mfd);
+    if (rc != 0) _exit(4);
+}
+
+static void action_elixir_setsid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    (void)setsid();
+}
+
+static void action_elixir_pselect6(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    struct timespec ts = {0, 0};
+    int rc = (int)syscall(SYS_pselect6, 0, NULL, NULL, NULL, &ts, NULL);
+    if (rc < 0 && errno != EINTR) _exit(3);
+}
+
+static void action_elixir_close_range(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    (void)syscall(SYS_close_range, 100, 101, 0);
+}
+
+static void action_elixir_socketpair_unix(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(3);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_elixir_socketpair_non_unix_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int sv[2];
+    socketpair(AF_INET, SOCK_STREAM, 0, sv);
+}
+
+static void action_elixir_socket_returns_eperm(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_elixir_connect_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    connect(-1, NULL, 0);
+}
+
+static void action_elixir_bind_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    bind(-1, NULL, 0);
+}
+
+static void action_elixir_setfsuid_zero(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    setfsuid(0);
+}
+
+static void action_elixir_setfsuid_nonzero_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    setfsuid(1000);
+}
+
+static void action_elixir_setfsgid_zero(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    setfsgid(0);
+}
+
+static void action_elixir_setfsgid_nonzero_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    setfsgid(1000);
+}
+
+static void action_elixir_sendmsg_recvmsg(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(3);
+    char buf[] = "x";
+    struct iovec iov = {.iov_base = buf, .iov_len = 1};
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    if (sendmsg(sv[0], &msg, 0) < 0) { close(sv[0]); close(sv[1]); _exit(4); }
+    char rbuf[1];
+    struct iovec riov = {.iov_base = rbuf, .iov_len = 1};
+    struct msghdr rmsg;
+    memset(&rmsg, 0, sizeof(rmsg));
+    rmsg.msg_iov = &riov;
+    rmsg.msg_iovlen = 1;
+    if (recvmsg(sv[1], &rmsg, 0) < 0) { close(sv[0]); close(sv[1]); _exit(5); }
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_elixir_getsockopt_setsockopt(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) _exit(3);
+    int val = 1;
+    if (setsockopt(sv[0], SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) != 0) {
+        close(sv[0]); close(sv[1]); _exit(4);
+    }
+    int gval = 0;
+    socklen_t glen = sizeof(gval);
+    if (getsockopt(sv[0], SOL_SOCKET, SO_KEEPALIVE, &gval, &glen) != 0) {
+        close(sv[0]); close(sv[1]); _exit(5);
+    }
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void action_elixir_prctl_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "beam-worker") != 0) _exit(3);
+}
+
+static void action_elixir_prctl_get_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    char name[16];
+    if (prctl(PR_GET_NAME, name) != 0) _exit(3);
+}
+
+static void action_elixir_prctl_dumpable_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_elixir_clone_user_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_elixir_unshare_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    unshare(CLONE_NEWUSER);
+}
+
+static void action_elixir_capset_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
+}
+
+static void action_elixir_sched_setscheduler_blocked(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_ELIXIR) != 0) _exit(2);
+    struct sched_param param = {0};
+    sched_setscheduler(0, SCHED_FIFO, &param);
+}
+
+/* Actions for SECCOMP_PROFILE_CSHARP */
+static void action_csharp_sched_getaffinity(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+}
+
+static void action_csharp_poll(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct pollfd pfd = {.fd = -1, .events = POLLIN, .revents = 0};
+    if (poll(&pfd, 1, 0) < 0) _exit(3);
+}
+
+static void action_csharp_tgkill(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    if (syscall(SYS_tgkill, getpid(), gettid(), 0) != 0) _exit(3);
+}
+
+static void action_strict_tgkill_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    syscall(SYS_tgkill, getpid(), gettid(), 0);
+}
+
+static void action_csharp_epoll_create1(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = (int)syscall(SYS_epoll_create1, 0);
+    if (fd < 0) _exit(3);
+    close(fd);
+}
+
+static void action_strict_epoll_create1_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    syscall(SYS_epoll_create1, 0);
+}
+
+static void action_csharp_sched_setaffinity_self(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) _exit(4);
+}
+
+static void action_csharp_sched_setaffinity_other_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(0, &set);
+    sched_setaffinity(1, sizeof(set), &set);
+}
+
+static void action_strict_sched_setaffinity_killed(void) {
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) _exit(3);
+    if (seccomp_apply_profile(SECCOMP_PROFILE_STRICT) != 0) _exit(2);
+    sched_setaffinity(0, sizeof(set), &set);
+}
+
+static void action_csharp_get_mempolicy(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int mode = 0;
+    (void)syscall(SYS_get_mempolicy, &mode, NULL, 0, 0, 0);
+}
+
+static void action_csharp_memfd_create(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "csharp_jit", 0);
+    if (fd >= 0) close(fd);
+}
+
+static void action_csharp_flock(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int pfd[2];
+    if (pipe2(pfd, O_CLOEXEC) != 0) _exit(2);
+    (void)flock(pfd[0], LOCK_SH | LOCK_NB);
+    close(pfd[0]);
+    close(pfd[1]);
+}
+
+static void action_csharp_ftruncate(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = (int)syscall(SYS_memfd_create, "test_trunc", 0);
+    if (fd >= 0) {
+        (void)ftruncate(fd, 1024);
+        close(fd);
+    }
+}
+
+static void action_csharp_getsid(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    (void)getsid(0);
+}
+
+static void action_csharp_sched_queries(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sched_param sp;
+    (void)sched_getparam(0, &sp);
+    (void)sched_getscheduler(0);
+    (void)sched_get_priority_max(SCHED_OTHER);
+    (void)sched_get_priority_min(SCHED_OTHER);
+}
+
+static void action_csharp_sched_setscheduler_other(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sched_param sp = {0};
+    if (sched_setscheduler(0, SCHED_OTHER, &sp) != 0) _exit(3);
+}
+
+static void action_csharp_sched_setscheduler_fifo_denied(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sched_param sp = {.sched_priority = 1};
+    int rc = sched_setscheduler(0, SCHED_FIFO, &sp);
+    if (rc == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_csharp_socket_eperm(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1 && errno == EPERM) _exit(0);
+    _exit(3);
+}
+
+static void action_csharp_connect_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sockaddr sa = {0};
+    connect(3, &sa, sizeof(sa));
+}
+
+static void action_csharp_bind_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct sockaddr sa = {0};
+    bind(3, &sa, sizeof(sa));
+}
+
+static void action_csharp_listen_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    listen(3, 10);
+}
+
+static void action_csharp_accept_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    accept(3, NULL, NULL);
+}
+
+static void action_csharp_prctl_set_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    if (prctl(PR_SET_NAME, "csharp_worker") != 0) _exit(3);
+}
+
+static void action_csharp_prctl_get_name(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    char buf[16] = {0};
+    if (prctl(PR_GET_NAME, buf) != 0) _exit(3);
+}
+
+static void action_csharp_prctl_dumpable_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    prctl(PR_SET_DUMPABLE, 1);
+}
+
+static void action_csharp_clone_user_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    syscall(SYS_clone, (uintptr_t)CLONE_NEWUSER, 0, 0, 0, 0);
+}
+
+static void action_csharp_unshare_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    syscall(SYS_unshare, CLONE_NEWUSER);
+}
+
+static void action_csharp_capset_killed(void) {
+    if (seccomp_apply_profile(SECCOMP_PROFILE_CSHARP) != 0) _exit(2);
+    struct __user_cap_header_struct hdr = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+    syscall(SYS_capset, &hdr, data);
 }
 
 int main(void) {
@@ -2129,11 +2736,139 @@ int main(void) {
         return 1;
     }
 
-    /* Test 132: socket() blocked with SIGSYS under Erlang profile */
-    if (expect_sigsys(action_erlang_socket_blocked)) {
-        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills socket() with SIGSYS (network denied)\n");
+    /* Test 132: chdir permitted under Erlang profile */
+    if (expect_success(action_erlang_chdir)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits chdir without SIGSYS\n");
     } else {
-        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted socket()!\n");
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on chdir!\n");
+        return 1;
+    }
+
+    /* Test 133: memfd_create permitted under Erlang profile */
+    if (expect_success(action_erlang_memfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits memfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on memfd_create!\n");
+        return 1;
+    }
+
+    /* Test 134: ftruncate permitted under Erlang profile */
+    if (expect_success(action_erlang_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits ftruncate without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 135: setsid permitted under Erlang profile */
+    if (expect_success(action_erlang_setsid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits setsid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on setsid!\n");
+        return 1;
+    }
+
+    /* Test 136: pselect6 permitted under Erlang profile */
+    if (expect_success(action_erlang_pselect6)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits pselect6 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on pselect6!\n");
+        return 1;
+    }
+
+    /* Test 137: close_range permitted under Erlang profile */
+    if (expect_success(action_erlang_close_range)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits close_range without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on close_range!\n");
+        return 1;
+    }
+
+    /* Test 138: socketpair(AF_UNIX) permitted under Erlang profile */
+    if (expect_success(action_erlang_socketpair_unix)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits socketpair(AF_UNIX) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on socketpair(AF_UNIX)!\n");
+        return 1;
+    }
+
+    /* Test 139: socketpair(AF_INET) killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_socketpair_inet_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills socketpair(AF_INET) with SIGSYS (AF_UNIX only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted socketpair(AF_INET)!\n");
+        return 1;
+    }
+
+    /* Test 140: socket() returns EPERM without crashing under Erlang profile */
+    if (expect_success(action_erlang_socket_returns_eperm)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG returns EPERM on socket() without crashing\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG socket() did not return EPERM!\n");
+        return 1;
+    }
+
+    /* Test 141: connect() killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_connect_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills connect() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted connect()!\n");
+        return 1;
+    }
+
+    /* Test 142: bind() killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_bind_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills bind() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted bind()!\n");
+        return 1;
+    }
+
+    /* Test 143: setfsuid(0) permitted under Erlang profile */
+    if (expect_success(action_erlang_setfsuid_zero)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits setfsuid(0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on setfsuid(0)!\n");
+        return 1;
+    }
+
+    /* Test 144: setfsuid(1000) killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_setfsuid_nonzero_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills setfsuid(non-zero) with SIGSYS (ID 0 only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted setfsuid(1000)!\n");
+        return 1;
+    }
+
+    /* Test 145: setfsgid(0) permitted under Erlang profile */
+    if (expect_success(action_erlang_setfsgid_zero)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits setfsgid(0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on setfsgid(0)!\n");
+        return 1;
+    }
+
+    /* Test 146: setfsgid(1000) killed with SIGSYS under Erlang profile */
+    if (expect_sigsys(action_erlang_setfsgid_nonzero_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG kills setfsgid(non-zero) with SIGSYS (ID 0 only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG permitted setfsgid(1000)!\n");
+        return 1;
+    }
+
+    /* Test 147: sendmsg and recvmsg permitted under Erlang profile */
+    if (expect_success(action_erlang_sendmsg_recvmsg)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits sendmsg and recvmsg on domain socketpair\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on sendmsg / recvmsg!\n");
+        return 1;
+    }
+
+    /* Test 148: getsockopt and setsockopt permitted under Erlang profile */
+    if (expect_success(action_erlang_getsockopt_setsockopt)) {
+        printf("  [PASS] SECCOMP_PROFILE_ERLANG permits getsockopt and setsockopt on domain socketpair\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ERLANG failed on getsockopt / setsockopt!\n");
         return 1;
     }
 
@@ -2169,9 +2904,553 @@ int main(void) {
         return 1;
     }
 
+    /* Test 137: getpgrp permitted under Elixir profile */
+    if (expect_success(action_elixir_getpgrp)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits getpgrp without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on getpgrp!\n");
+        return 1;
+    }
+
+    /* Test 138: getresuid permitted under Elixir profile */
+    if (expect_success(action_elixir_getresuid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits getresuid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on getresuid!\n");
+        return 1;
+    }
+
+    /* Test 139: getresgid permitted under Elixir profile */
+    if (expect_success(action_elixir_getresgid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits getresgid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on getresgid!\n");
+        return 1;
+    }
+
+    /* Test 140: wait4 permitted under Elixir profile */
+    if (expect_success(action_elixir_wait4)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits wait4 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on wait4!\n");
+        return 1;
+    }
+
+    /* Test 141: sched_getaffinity permitted under Elixir profile */
+    if (expect_success(action_elixir_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 142: epoll_create permitted under Elixir profile */
+    if (expect_success(action_elixir_epoll_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits epoll_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on epoll_create!\n");
+        return 1;
+    }
+
+    /* Test 143: epoll_create1 permitted under Elixir profile */
+    if (expect_success(action_elixir_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 144: epoll_ctl permitted under Elixir profile */
+    if (expect_success(action_elixir_epoll_ctl)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits epoll_ctl without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on epoll_ctl!\n");
+        return 1;
+    }
+
+    /* Test 145: epoll_wait permitted under Elixir profile */
+    if (expect_success(action_elixir_epoll_wait)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits epoll_wait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on epoll_wait!\n");
+        return 1;
+    }
+
+    /* Test 146: epoll_pwait permitted under Elixir profile */
+    if (expect_success(action_elixir_epoll_pwait)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits epoll_pwait without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on epoll_pwait!\n");
+        return 1;
+    }
+
+    /* Test 147: epoll_pwait2 permitted under Elixir profile */
+    if (expect_success(action_elixir_epoll_pwait2)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits epoll_pwait2 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on epoll_pwait2!\n");
+        return 1;
+    }
+
+    /* Test 148: poll permitted under Elixir profile */
+    if (expect_success(action_elixir_poll)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits poll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on poll!\n");
+        return 1;
+    }
+
+    /* Test 149: ppoll permitted under Elixir profile */
+    if (expect_success(action_elixir_ppoll)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits ppoll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on ppoll!\n");
+        return 1;
+    }
+
+    /* Test 150: timerfd_create permitted under Elixir profile */
+    if (expect_success(action_elixir_timerfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits timerfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on timerfd_create!\n");
+        return 1;
+    }
+
+    /* Test 151: timerfd_settime permitted under Elixir profile */
+    if (expect_success(action_elixir_timerfd_settime)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits timerfd_settime without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on timerfd_settime!\n");
+        return 1;
+    }
+
+    /* Test 152: timerfd_gettime permitted under Elixir profile */
+    if (expect_success(action_elixir_timerfd_gettime)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits timerfd_gettime without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on timerfd_gettime!\n");
+        return 1;
+    }
+
+    /* Test 153: chdir permitted under Elixir profile */
+    if (expect_success(action_elixir_chdir)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits chdir without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on chdir!\n");
+        return 1;
+    }
+
+    /* Test 154: memfd_create permitted under Elixir profile */
+    if (expect_success(action_elixir_memfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits memfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on memfd_create!\n");
+        return 1;
+    }
+
+    /* Test 155: ftruncate permitted under Elixir profile */
+    if (expect_success(action_elixir_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits ftruncate without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 156: setsid permitted under Elixir profile */
+    if (expect_success(action_elixir_setsid)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits setsid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on setsid!\n");
+        return 1;
+    }
+
+    /* Test 157: pselect6 permitted under Elixir profile */
+    if (expect_success(action_elixir_pselect6)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits pselect6 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on pselect6!\n");
+        return 1;
+    }
+
+    /* Test 158: close_range permitted under Elixir profile */
+    if (expect_success(action_elixir_close_range)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits close_range without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on close_range!\n");
+        return 1;
+    }
+
+    /* Test 159: socketpair(AF_UNIX) permitted under Elixir profile */
+    if (expect_success(action_elixir_socketpair_unix)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits socketpair(AF_UNIX) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on socketpair(AF_UNIX)!\n");
+        return 1;
+    }
+
+    /* Test 160: socketpair(AF_INET) killed with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_socketpair_non_unix_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills socketpair(AF_INET) with SIGSYS (AF_UNIX only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted socketpair(AF_INET)!\n");
+        return 1;
+    }
+
+    /* Test 161: socket() returns EPERM under Elixir profile */
+    if (expect_success(action_elixir_socket_returns_eperm)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR returns EPERM on socket() without crashing\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR did not return EPERM on socket()!\n");
+        return 1;
+    }
+
+    /* Test 162: connect() blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_connect_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills connect() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted connect()!\n");
+        return 1;
+    }
+
+    /* Test 163: bind() blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_bind_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills bind() with SIGSYS (network denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted bind()!\n");
+        return 1;
+    }
+
+    /* Test 164: setfsuid(0) permitted under Elixir profile */
+    if (expect_success(action_elixir_setfsuid_zero)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits setfsuid(0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on setfsuid(0)!\n");
+        return 1;
+    }
+
+    /* Test 165: setfsuid(1000) killed with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_setfsuid_nonzero_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills setfsuid(non-zero) with SIGSYS (ID 0 only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted setfsuid(1000)!\n");
+        return 1;
+    }
+
+    /* Test 166: setfsgid(0) permitted under Elixir profile */
+    if (expect_success(action_elixir_setfsgid_zero)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits setfsgid(0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on setfsgid(0)!\n");
+        return 1;
+    }
+
+    /* Test 167: setfsgid(1000) killed with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_setfsgid_nonzero_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills setfsgid(non-zero) with SIGSYS (ID 0 only)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted setfsgid(1000)!\n");
+        return 1;
+    }
+
+    /* Test 168: sendmsg and recvmsg permitted under Elixir profile */
+    if (expect_success(action_elixir_sendmsg_recvmsg)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits sendmsg and recvmsg on domain socketpair\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on sendmsg / recvmsg!\n");
+        return 1;
+    }
+
+    /* Test 169: getsockopt and setsockopt permitted under Elixir profile */
+    if (expect_success(action_elixir_getsockopt_setsockopt)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits getsockopt and setsockopt on domain socketpair\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on getsockopt / setsockopt!\n");
+        return 1;
+    }
+
+    /* Test 170: prctl(PR_SET_NAME) permitted under Elixir profile */
+    if (expect_success(action_elixir_prctl_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 171: prctl(PR_GET_NAME) permitted under Elixir profile */
+    if (expect_success(action_elixir_prctl_get_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR permits prctl(PR_GET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR failed on prctl(PR_GET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 172: prctl(PR_SET_DUMPABLE) blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_prctl_dumpable_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 173: CLONE_NEWUSER blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_clone_user_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 174: unshare blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_unshare_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted unshare()!\n");
+        return 1;
+    }
+
+    /* Test 175: capset blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_capset_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted capset()!\n");
+        return 1;
+    }
+
+    /* Test 176: sched_setscheduler blocked with SIGSYS under Elixir profile */
+    if (expect_sigsys(action_elixir_sched_setscheduler_blocked)) {
+        printf("  [PASS] SECCOMP_PROFILE_ELIXIR kills sched_setscheduler() with SIGSYS (scheduler changes denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_ELIXIR permitted sched_setscheduler()!\n");
+        return 1;
+    }
+
+    /* Test 177: sched_getaffinity permitted under C# profile */
+    if (expect_success(action_csharp_sched_getaffinity)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits sched_getaffinity without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on sched_getaffinity!\n");
+        return 1;
+    }
+
+    /* Test 178: get_mempolicy permitted under C# profile */
+    if (expect_success(action_csharp_get_mempolicy)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits get_mempolicy without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on get_mempolicy!\n");
+        return 1;
+    }
+
+    /* Test 179: memfd_create permitted under C# profile */
+    if (expect_success(action_csharp_memfd_create)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits memfd_create without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on memfd_create!\n");
+        return 1;
+    }
+
+    /* Test 180: flock permitted under C# profile */
+    if (expect_success(action_csharp_flock)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits flock without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on flock!\n");
+        return 1;
+    }
+
+    /* Test 181: ftruncate permitted under C# profile */
+    if (expect_success(action_csharp_ftruncate)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits ftruncate without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on ftruncate!\n");
+        return 1;
+    }
+
+    /* Test 182: getsid permitted under C# profile */
+    if (expect_success(action_csharp_getsid)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits getsid without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on getsid!\n");
+        return 1;
+    }
+
+    /* Test 183: sched_getparam / sched_getscheduler permitted under C# profile */
+    if (expect_success(action_csharp_sched_queries)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits scheduler query syscalls without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on scheduler query syscalls!\n");
+        return 1;
+    }
+
+    /* Test 184: sched_setscheduler(SCHED_OTHER) permitted under C# profile */
+    if (expect_success(action_csharp_sched_setscheduler_other)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits sched_setscheduler(SCHED_OTHER) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on sched_setscheduler(SCHED_OTHER)!\n");
+        return 1;
+    }
+
+    /* Test 185: sched_setscheduler(SCHED_FIFO) denied with EPERM under C# profile */
+    if (expect_success(action_csharp_sched_setscheduler_fifo_denied)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP denies sched_setscheduler(SCHED_FIFO) with EPERM (no SIGSYS)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted sched_setscheduler(SCHED_FIFO) or killed with SIGSYS!\n");
+        return 1;
+    }
+
+    /* Test 186: socket() returns EPERM under C# profile */
+    if (expect_success(action_csharp_socket_eperm)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP returns EPERM on socket() without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on socket() EPERM!\n");
+        return 1;
+    }
+
+    /* Test 187: connect() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_connect_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills connect() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted connect()!\n");
+        return 1;
+    }
+
+    /* Test 188: bind() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_bind_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills bind() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted bind()!\n");
+        return 1;
+    }
+
+    /* Test 189: listen() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_listen_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills listen() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted listen()!\n");
+        return 1;
+    }
+
+    /* Test 190: accept() killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_accept_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills accept() with SIGSYS (network default-denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted accept()!\n");
+        return 1;
+    }
+
+    /* Test 191: prctl(PR_SET_NAME) permitted under C# profile */
+    if (expect_success(action_csharp_prctl_set_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits prctl(PR_SET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on prctl(PR_SET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 192: prctl(PR_GET_NAME) permitted under C# profile */
+    if (expect_success(action_csharp_prctl_get_name)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits prctl(PR_GET_NAME) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on prctl(PR_GET_NAME)!\n");
+        return 1;
+    }
+
+    /* Test 193: prctl(PR_SET_DUMPABLE) killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_prctl_dumpable_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills prctl(PR_SET_DUMPABLE) with SIGSYS (dumpability locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted prctl(PR_SET_DUMPABLE)!\n");
+        return 1;
+    }
+
+    /* Test 194: CLONE_NEWUSER killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_clone_user_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills clone(CLONE_NEWUSER) with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted CLONE_NEWUSER!\n");
+        return 1;
+    }
+
+    /* Test 195: unshare killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_unshare_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills unshare() with SIGSYS (namespaces denied)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted unshare()!\n");
+        return 1;
+    }
+
+    /* Test 196: capset killed with SIGSYS under C# profile */
+    if (expect_sigsys(action_csharp_capset_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills capset() with SIGSYS (privilege modification locked)\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted capset()!\n");
+        return 1;
+    }
+
+    /* Test 197: sched_setaffinity(pid=0) permitted under C# profile */
+    if (expect_success(action_csharp_sched_setaffinity_self)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits sched_setaffinity(pid=0) without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on self sched_setaffinity!\n");
+        return 1;
+    }
+
+    /* Test 198: sched_setaffinity(nonzero pid) killed under C# profile */
+    if (expect_sigsys(action_csharp_sched_setaffinity_other_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP kills sched_setaffinity(nonzero pid) with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP permitted sched_setaffinity(nonzero pid)!\n");
+        return 1;
+    }
+
+    /* Test 199: sched_setaffinity(pid=0) remains denied under strict profile */
+    if (expect_sigsys(action_strict_sched_setaffinity_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills sched_setaffinity(pid=0) with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted sched_setaffinity!\n");
+        return 1;
+    }
+
+    /* Test 200: poll is permitted under the C# profile */
+    if (expect_success(action_csharp_poll)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits poll without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on poll!\n");
+        return 1;
+    }
+
+    /* Test 201: tgkill is permitted under the C# profile */
+    if (expect_success(action_csharp_tgkill)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits tgkill without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on tgkill!\n");
+        return 1;
+    }
+
+    /* Test 202: tgkill remains denied under strict profile */
+    if (expect_sigsys(action_strict_tgkill_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills tgkill with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted tgkill!\n");
+        return 1;
+    }
+
+    /* Test 203: epoll_create1 is permitted under the C# profile */
+    if (expect_success(action_csharp_epoll_create1)) {
+        printf("  [PASS] SECCOMP_PROFILE_CSHARP permits epoll_create1 without SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_CSHARP failed on epoll_create1!\n");
+        return 1;
+    }
+
+    /* Test 204: epoll_create1 remains denied under strict profile */
+    if (expect_sigsys(action_strict_epoll_create1_killed)) {
+        printf("  [PASS] SECCOMP_PROFILE_STRICT kills epoll_create1 with SIGSYS\n");
+    } else {
+        fprintf(stderr, "  [FAIL] SECCOMP_PROFILE_STRICT permitted epoll_create1!\n");
+        return 1;
+    }
+
     printf("========================================================================\n");
     printf("SECCOMP PROFILE UNIT TEST SUMMARY:\n");
-    printf("  All 136 seccomp profile unit verification checks PASSED.\n");
+    printf("  All 220 seccomp profile unit verification checks PASSED.\n");
     printf("========================================================================\n");
     return 0;
 }

@@ -41,6 +41,8 @@ class RuntimeFamily(str, Enum):
     INTERPRETED = "INTERPRETED"
     DATABASE = "DATABASE"
     FRAMEWORK = "FRAMEWORK"
+    DOTNET = "DOTNET"
+    MANAGED = "MANAGED"
 
 
 class Milestone(str, Enum):
@@ -72,6 +74,8 @@ class SeccompPolicyProfile(str, Enum):
     DART = "dart"
     RACKET = "racket"
     ERLANG = "erlang"
+    ELIXIR = "elixir"
+    CSHARP = "csharp"
 
 
 MAX_SOURCE_BYTES: int = 65536
